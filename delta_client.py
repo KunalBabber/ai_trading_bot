@@ -15,13 +15,6 @@ from typing import Dict, Any, Optional, List
 import requests
 import pandas as pd
 from dotenv import load_dotenv
-import urllib3.util.connection as urllib3_cn
-
-# Force IPv4 connection to ensure outbound requests always match whitelisted IPv4 addresses
-try:
-    urllib3_cn.allowed_gai_family = lambda: socket.AF_INET
-except Exception:
-    pass
 
 # Load .env if present
 load_dotenv()
@@ -39,7 +32,7 @@ class DeltaClient:
         api_secret: Optional[str] = None,
         base_url: str = "https://cdn-ind.testnet.deltaex.org",
         dry_run: Optional[bool] = None,
-        timeout: int = 10,
+        timeout: int = 6,
     ):
         self.api_key = api_key or os.getenv("DELTA_API_KEY", "")
         self.api_secret = api_secret or os.getenv("DELTA_API_SECRET", "")

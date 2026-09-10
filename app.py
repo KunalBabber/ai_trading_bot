@@ -470,7 +470,7 @@ def render_smart_terminal_html(symbol: str, resolution: str, is_running: bool, s
 @st.cache_data(ttl=300)
 def get_delta_symbols():
     try:
-        c = DeltaClient()
+        c = DeltaClient(timeout=3)
         prods = c.get_products()
         live_perps = [
             p["symbol"] for p in prods
@@ -481,6 +481,15 @@ def get_delta_symbols():
         return ordered if ordered else ["BTCUSD", "ETHUSD", "SOLUSD"]
     except Exception:
         return ["BTCUSD", "ETHUSD", "SOLUSD", "XRPUSD", "DOGEUSD"]
+
+# Cached candle fetch for preview when the bot engine is not actively polling
+@st.cache_data(ttl=15)
+def get_preview_candles(symbol: str, resolution: str) -> pd.DataFrame:
+    try:
+        c = DeltaClient(timeout=4)
+        return c.fetch_candles(symbol, resolution, limit=160)
+    except Exception:
+        return pd.DataFrame()
 
 
 # Factory Default Settings & Persistence Configuration
@@ -576,21 +585,33 @@ with st.sidebar:
 
         selected_url = st.selectbox("API Base URL", base_urls, key="cfg_url")
 
-        # Outbound IP detector (Queries checkip without rate limits)
-        @st.cache_data(ttl=120)
-        def detect_server_ip():
-            for u in ["https://checkip.amazonaws.com", "https://ifconfig.co/ip", "https://api4.ipify.org"]:
+        # Outbound IP detector (On-demand with fast fallback)
+        def fetch_server_ip():
+            for u in ["https://api4.ipify.org", "https://checkip.amazonaws.com", "https://ifconfig.co/ip"]:
                 try:
-                    r = requests.get(u, timeout=4)
+                    r = requests.get(u, timeout=2.0)
                     if r.status_code == 200 and r.text.strip():
                         return r.text.strip()
                 except Exception:
                     continue
-            return "Click [🔌 Test API] below to detect"
+            return "Unable to detect (Click [🔌 Test API] below)"
 
-        detected_ip = detect_server_ip()
+        if "detected_server_ip" not in st.session_state:
+            st.session_state["detected_server_ip"] = None
 
-        st.info(f"🌐 **Server Outbound IP:** `{detected_ip}`\n\n*(Add this to your Delta API Key whitelist)*")
+        col_ip_lbl, col_ip_btn = st.columns([2.8, 1.2])
+        with col_ip_lbl:
+            cur_ip = st.session_state["detected_server_ip"]
+            if cur_ip:
+                st.info(f"🌐 **Server IP:** `{cur_ip}`\n\n*(Add to Delta API Key whitelist)*")
+            else:
+                st.caption("🌐 **Server Outbound IP:** Click 'Detect' or 'Test API'.")
+        with col_ip_btn:
+            if st.button("🔍 Detect", key="btn_detect_ip", use_container_width=True, help="Detect Streamlit Cloud server outbound IP"):
+                with st.spinner("Checking IP..."):
+                    st.session_state["detected_server_ip"] = fetch_server_ip()
+                st.rerun()
+
 
         api_key_input = st.text_input(
             "API Key",
@@ -614,6 +635,7 @@ with st.sidebar:
                 else:
                     st.error(test_res.get("error"))
                     if test_res.get("ip_needed"):
+                        st.session_state["detected_server_ip"] = test_res["ip_needed"]
                         st.caption("📋 **Copy this IP to your Delta whitelist:**")
                         st.code(test_res["ip_needed"], language="text")
 
@@ -767,34 +789,12 @@ def render_dashboard(
     logs = state["recent_logs"]
     specs = state["product_specs"]
 
-    # Verify live position with Delta Exchange to detect manual/external closes
-    if position.get("side", 0) != 0:
-        try:
-            client_sync = DeltaClient(dry_run=False)
-            p_obj = client_sync.get_product(symbol)
-            if p_obj:
-                delta_pos = client_sync.get_position_for_product(p_obj["id"])
-                if not delta_pos or int(delta_pos.get("size", 0)) == 0:
-                    position = {
-                        "side": 0,
-                        "size": 0,
-                        "entry_price": 0.0,
-                        "stop_loss": 0.0,
-                        "take_profit": 0.0,
-                        "unrealized_pnl": 0.0,
-                        "unrealized_pnl_pct": 0.0,
-                    }
-                    with bot_manager.state_lock:
-                        bot_manager.active_position = dict(position)
-        except Exception:
-            pass
-
     # Fallback to fetch candles & evaluate live AI preview if bot not running yet
     if candles.empty:
-        client_fallback = DeltaClient()
-        candles = client_fallback.fetch_candles(symbol, resolution, limit=160)
+        candles = get_preview_candles(symbol, resolution)
         if not candles.empty:
             current_price = float(candles["close"].iloc[-1])
+
 
     if (not is_running or not metrics) and len(candles) >= 96:
         try:
