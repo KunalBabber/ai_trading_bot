@@ -20,6 +20,7 @@ from live_features import LiveFeatureEngine
 from model import GRUTradingModel
 from features import FEATURE_COLUMNS
 from strategy import make_signal, position_fraction
+from timezone_utils import IST_TZ, get_now
 
 
 class TradingBotManager:
@@ -84,10 +85,27 @@ class TradingBotManager:
         self.model: Optional[GRUTradingModel] = None
         self.feature_engine: Optional[LiveFeatureEngine] = None
         self.product_specs: Dict[str, Any] = {}
+        # Default Timezone: IST (+05:30)
+        self.tz = IST_TZ
+        self.tz_name = "IST"
+
+    def set_timezone(self, tz, name: str = "IST"):
+        """Update active timezone for bot logs and timestamps."""
+        with self.state_lock:
+            self.tz = tz
+            self.tz_name = name
+
+    def now_dt(self) -> datetime:
+        """Returns current datetime in bot's configured timezone."""
+        return datetime.now(self.tz)
+
+    def now_str(self, fmt: str = "%I:%M:%S %p") -> str:
+        """Returns formatted current time in bot's configured timezone."""
+        return self.now_dt().strftime(fmt)
 
     def log(self, message: str):
-        """Append log message with system local timestamp."""
-        ts = datetime.now().strftime("%I:%M:%S %p")
+        """Append log message with localized timestamp."""
+        ts = self.now_str("%I:%M:%S %p")
         entry = f"[{ts}] {message}"
         with self.state_lock:
             self.recent_logs.append(entry)
@@ -264,7 +282,7 @@ class TradingBotManager:
             pnl_dollar = pos["unrealized_pnl"]
             self.simulated_equity += pnl_dollar
             self.trade_history.append({
-                "time": datetime.now().strftime("%Y-%m-%d %I:%M:%S %p"),
+                "time": self.now_str("%Y-%m-%d %I:%M:%S %p"),
                 "symbol": self.symbol,
                 "side": "BUY (Long)" if pos["side"] == 1 else "SELL (Short)",
                 "size": pos["size"],
@@ -541,7 +559,7 @@ class TradingBotManager:
                 pnl_dollar = pos["unrealized_pnl"]
                 self.simulated_equity += pnl_dollar
                 self.trade_history.append({
-                    "time": datetime.now().strftime("%Y-%m-%d %I:%M:%S %p"),
+                    "time": self.now_str("%Y-%m-%d %I:%M:%S %p"),
                     "symbol": self.symbol,
                     "side": "BUY (Long)" if pos["side"] == 1 else "SELL (Short)",
                     "size": pos["size"],

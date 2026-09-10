@@ -29,6 +29,7 @@ from live_features import LiveFeatureEngine
 from model import GRUTradingModel
 from features import FEATURE_COLUMNS
 from strategy import make_signal, position_fraction
+from timezone_utils import IST_TZ, get_now
 
 
 class DeltaAITrader:
@@ -107,7 +108,7 @@ class DeltaAITrader:
         print(f"Symbol:       {self.symbol}")
         print(f"Timeframe:    {self.resolution}")
         print(f"Leverage:     {self.leverage}x")
-        print(f"System Time:  {datetime.now().strftime('%Y-%m-%d %I:%M:%S %p')}")
+        print(f"System Time:  {get_now().strftime('%Y-%m-%d %I:%M:%S %p')} (IST)")
 
         # 1. Fetch Product Metadata
         self.product = self.client.get_product(self.symbol)
@@ -311,8 +312,8 @@ class DeltaAITrader:
             self.cfg["strategy"]["min_expected_return"],
         )
 
-        # Clean dashboard display with system local time
-        now_str = datetime.now().strftime("%Y-%m-%d %I:%M:%S %p")
+        # Clean dashboard display with system local time (IST)
+        now_str = get_now().strftime("%Y-%m-%d %I:%M:%S %p")
         pos_str = "FLAT"
         if self.current_position["side"] == +1:
             pos_str = f"LONG ({self.current_position['size']}x @ {self.current_position['entry_price']:.1f})"

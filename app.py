@@ -22,6 +22,7 @@ from bot_manager import bot_manager
 from delta_client import DeltaClient
 from live_features import LiveFeatureEngine
 from train import GRUTradingModel
+from timezone_utils import IST_TZ, TIMEZONE_MAP, get_now, format_now
 
 @st.cache_resource
 def get_preview_model():
@@ -219,9 +220,9 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-def format_terminal_logs(logs):
+def format_terminal_logs(logs, active_tz=IST_TZ):
     if not logs:
-        now_str = datetime.now().strftime("%I:%M:%S %p")
+        now_str = datetime.now(active_tz).strftime("%I:%M:%S %p")
         lines = [
             '<span style="color: #38bdf8; font-weight: 700;">┌──(delta-ai-terminal)─[~/engine]</span>',
             '<span style="color: #38bdf8; font-weight: 700;">└─$</span> <span style="color: #f0f6fc;">python live_trader.py --daemon</span>',
@@ -549,6 +550,17 @@ with st.sidebar:
     symbol_selected = st.selectbox("Trading Pair", available_symbols, index=0)
     timeframe_selected = st.selectbox("Timeframe", ["1m", "5m", "15m", "1h"], index=1)
 
+    # Timezone Selector (Defaults to Indian Standard Time IST for Delta Exchange)
+    tz_names = list(TIMEZONE_MAP.keys())
+    selected_tz_name = st.selectbox(
+        "Display Timezone",
+        tz_names,
+        index=0,
+        help="Local clock timezone for charts, header, and terminal logs. Defaults to IST (+5:30).",
+    )
+    active_tz, active_tz_abbr = TIMEZONE_MAP[selected_tz_name]
+    bot_manager.set_timezone(active_tz, active_tz_abbr)
+
     # 4. Sizing & Leverage
     st.markdown("### ⚙️ **Position & Leverage**")
     leverage_val = st.slider("Leverage", min_value=1, max_value=50, value=10, step=1, format="%dx")
@@ -608,7 +620,7 @@ with st.sidebar:
 
 # === REAL-TIME DASHBOARD FRAGMENT ===
 @st.fragment(run_every="3s")
-def render_dashboard(symbol: str, resolution: str):
+def render_dashboard(symbol: str, resolution: str, active_tz=IST_TZ, active_tz_abbr: str = "IST"):
     state = bot_manager.get_state()
     is_running = state["is_running"]
     current_price = state["current_price"]
@@ -656,14 +668,14 @@ def render_dashboard(symbol: str, resolution: str):
     total_trades = len(trade_history)
     win_rate = (len(win_trades) / total_trades * 100.0) if total_trades > 0 else 0.0
 
-    local_time_str = datetime.now().strftime("%I:%M:%S %p")
+    local_time_str = datetime.now(active_tz).strftime("%I:%M:%S %p")
 
     col_h1, col_h2, col_h3, col_h4 = st.columns([2, 1, 1, 1])
     with col_h1:
         st.markdown(f"## **{symbol}** • {resolution} Timeframe")
         status_color = "🟢 RUNNING" if is_running else "⚪ STOPPED"
         mode_text = "SIMULATED DRY-RUN" if state["mode"] == "dry_run" else "LIVE REAL-MONEY TRADING"
-        st.caption(f"Status: **{status_color}** • Engine: **{mode_text}** • System Time: **{local_time_str}**")
+        st.caption(f"Status: **{status_color}** • Engine: **{mode_text}** • System Time ({active_tz_abbr}): **{local_time_str}**")
     with col_h2:
         if current_price > 0:
             first_close = float(candles["close"].iloc[0]) if len(candles) else current_price
@@ -875,9 +887,8 @@ def render_dashboard(symbol: str, resolution: str):
     if not candles.empty and len(candles) > 5:
         candles_disp = candles.tail(120).copy()
 
-        # Convert timestamps to user's local system timezone
-        local_tz = datetime.now().astimezone().tzinfo
-        candles_disp["timestamp_local"] = pd.to_datetime(candles_disp["timestamp"]).dt.tz_convert(local_tz).dt.tz_localize(None)
+        # Convert timestamps to user's selected timezone (default: IST)
+        candles_disp["timestamp_local"] = pd.to_datetime(candles_disp["timestamp"]).dt.tz_convert(active_tz).dt.tz_localize(None)
 
         # Calculate fast & slow EMAs for chart overlay
         candles_disp["ema9"] = candles_disp["close"].ewm(span=9, adjust=False).mean()
@@ -1259,7 +1270,7 @@ def render_dashboard(symbol: str, resolution: str):
 
         # Format Terminal Logs Content (Chronological: newest at bottom, last 80 entries for rich scrollback)
         display_logs = logs[-80:] if logs else []
-        body_content = format_terminal_logs(display_logs)
+        body_content = format_terminal_logs(display_logs, active_tz)
 
         status_tag = (
             '<span style="color: #4ade80; font-weight: 600;">● SCANNING (TICK OK)</span>'
@@ -1302,4 +1313,4 @@ def render_dashboard(symbol: str, resolution: str):
 
 
 # Render main interactive dashboard
-render_dashboard(symbol_selected, timeframe_selected)
+render_dashboard(symbol_selected, timeframe_selected, active_tz, active_tz_abbr)
