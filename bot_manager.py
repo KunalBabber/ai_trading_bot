@@ -41,7 +41,7 @@ class TradingBotManager:
 
         self.thread: Optional[threading.Thread] = None
         self.stop_event = threading.Event()
-        self.state_lock = threading.Lock()
+        self.state_lock = threading.RLock()
 
         # Shared State for UI
         self.is_running = False
