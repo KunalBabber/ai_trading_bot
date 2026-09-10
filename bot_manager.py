@@ -367,7 +367,10 @@ class TradingBotManager:
                 else:
                     err = bals_res.get("error", "Unknown auth")
                     if "ip_not_whitelisted" in str(err):
-                        self.log("[WARN] IP not whitelisted for API key on Delta Exchange.")
+                        raw_err = bals_res.get("raw", {}).get("error", {})
+                        client_ip = raw_err.get("context", {}).get("client_ip", "")
+                        ip_info = f" (Detected IP: {client_ip})" if client_ip else ""
+                        self.log(f"[WARN] IP not whitelisted for API key on Delta Exchange!{ip_info}")
             except Exception as e:
                 self.log(f"[WARN] Balance query error: {e}")
 
@@ -674,7 +677,10 @@ class TradingBotManager:
         else:
             err = order_res.get('error')
             if "ip_not_whitelisted" in str(err):
-                self.log("[REJECTED] IP not whitelisted on Delta Exchange! Please remove IP restriction from your Delta API key settings.")
+                raw_err = order_res.get("raw", {}).get("error", {})
+                client_ip = raw_err.get("context", {}).get("client_ip", "")
+                ip_info = f" (Your IP detected by Delta: {client_ip})" if client_ip else ""
+                self.log(f"[REJECTED] IP not whitelisted on Delta Exchange!{ip_info} Please remove IP restriction or add this IP in your Delta API key settings.")
             else:
                 self.log(f"[REJECTED] {err}")
 
