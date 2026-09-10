@@ -576,11 +576,19 @@ with st.sidebar:
 
         selected_url = st.selectbox("API Base URL", base_urls, key="cfg_url")
 
-        # Outbound IP detector (Shows current server/cloud IP to whitelist on Delta)
-        try:
-            detected_ip = requests.get("https://api.ipify.org", timeout=3).text.strip()
-        except Exception:
-            detected_ip = "223.185.61.116"
+        # Outbound IP detector (Queries checkip without rate limits)
+        @st.cache_data(ttl=120)
+        def detect_server_ip():
+            for u in ["https://checkip.amazonaws.com", "https://ifconfig.co/ip", "https://api4.ipify.org"]:
+                try:
+                    r = requests.get(u, timeout=4)
+                    if r.status_code == 200 and r.text.strip():
+                        return r.text.strip()
+                except Exception:
+                    continue
+            return "Click [🔌 Test API] below to detect"
+
+        detected_ip = detect_server_ip()
 
         st.info(f"🌐 **Server Outbound IP:** `{detected_ip}`\n\n*(Add this to your Delta API Key whitelist)*")
 
@@ -605,6 +613,9 @@ with st.sidebar:
                     st.success(test_res["message"])
                 else:
                     st.error(test_res.get("error"))
+                    if test_res.get("ip_needed"):
+                        st.caption("📋 **Copy this IP to your Delta whitelist:**")
+                        st.code(test_res["ip_needed"], language="text")
 
         with col_c2:
             if st.button("💾 Save .env", use_container_width=True):

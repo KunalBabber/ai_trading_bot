@@ -207,7 +207,8 @@ class TradingBotManager:
                 client_ip = raw_err.get("context", {}).get("client_ip", "Unknown")
                 return {
                     "success": False,
-                    "error": f"IP Not Whitelisted. Whitelist your IP ({client_ip}) in Delta API settings.",
+                    "ip_needed": client_ip,
+                    "error": f"IP Not Whitelisted on Delta Exchange!\n\nYour Streamlit Cloud Server IP is: {client_ip}",
                 }
             return {
                 "success": False,
