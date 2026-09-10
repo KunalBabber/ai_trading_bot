@@ -6,27 +6,40 @@ order placement, position management, and live market candle retrieval.
 
 import os
 import time
-import json
-import hmac
 import hashlib
+import hmac
+import json
+import socket
 from urllib.parse import urlencode
 from typing import Dict, Any, Optional, List
 import requests
 import pandas as pd
 from dotenv import load_dotenv
+import urllib3.util.connection as urllib3_cn
+
+# Force IPv4 connection to ensure outbound requests always match whitelisted IPv4 addresses
+try:
+    urllib3_cn.allowed_gai_family = lambda: socket.AF_INET
+except Exception:
+    pass
 
 # Load .env if present
 load_dotenv()
 
 
 class DeltaClient:
+    """
+    Unified client for Delta Exchange REST API v2 (Production & Testnet).
+    Handles HMAC-SHA256 authentication, candles, orders, wallet balances, and bracket targets.
+    """
+
     def __init__(
         self,
         api_key: Optional[str] = None,
         api_secret: Optional[str] = None,
-        base_url: Optional[str] = None,
+        base_url: str = "https://cdn-ind.testnet.deltaex.org",
         dry_run: Optional[bool] = None,
-        timeout: int = 15,
+        timeout: int = 10,
     ):
         self.api_key = api_key or os.getenv("DELTA_API_KEY", "")
         self.api_secret = api_secret or os.getenv("DELTA_API_SECRET", "")
@@ -40,12 +53,14 @@ class DeltaClient:
         self.timeout = timeout
         self.session = requests.Session()
 
+    # === Authentication & Request Dispatch ===
+
     def _sign_request(
         self,
-        path: str,
-        method: str = "GET",
+        endpoint: str,
+        method: str,
         query_params: Optional[Dict[str, Any]] = None,
-        body_dict: Optional[Dict[str, Any]] = None,
+        body_str: str = "",
     ) -> Dict[str, str]:
         """
         Generate Delta Exchange HMAC-SHA256 signature headers:
@@ -58,10 +73,9 @@ class DeltaClient:
             if query_params:
                 auth_payload = "?" + urlencode(query_params)
         else:
-            if body_dict:
-                auth_payload = json.dumps(body_dict, separators=(",", ":"), sort_keys=True)
+            auth_payload = body_str
 
-        sign_str = method.upper() + timestamp + path + auth_payload
+        sign_str = method.upper() + timestamp + endpoint + auth_payload
         signature = hmac.new(
             self.api_secret.encode("utf-8"),
             sign_str.encode("utf-8"),
@@ -86,12 +100,12 @@ class DeltaClient:
         authenticated: bool = True,
     ) -> Dict[str, Any]:
         url = self.base_url + endpoint
-        headers = {}
+        payload_json = json.dumps(data) if data and method.upper() != "GET" else ""
 
         if authenticated:
             if not self.api_key or not self.api_secret:
                 raise ValueError("API Key and Secret required for authenticated requests.")
-            headers = self._sign_request(endpoint, method, params, data)
+            headers = self._sign_request(endpoint, method, params, payload_json)
         else:
             headers = {
                 "Accept": "application/json",
@@ -99,14 +113,12 @@ class DeltaClient:
                 "User-Agent": "ai-trading-bot-delta/1.0",
             }
 
-        payload_json = json.dumps(data) if data and method.upper() != "GET" else None
-
         try:
             resp = self.session.request(
                 method=method,
                 url=url,
                 params=params,
-                data=payload_json,
+                data=payload_json if payload_json else None,
                 headers=headers,
                 timeout=self.timeout,
             )

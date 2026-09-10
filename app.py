@@ -576,6 +576,14 @@ with st.sidebar:
 
         selected_url = st.selectbox("API Base URL", base_urls, key="cfg_url")
 
+        # Outbound IP detector (Shows current server/cloud IP to whitelist on Delta)
+        try:
+            detected_ip = requests.get("https://api.ipify.org", timeout=3).text.strip()
+        except Exception:
+            detected_ip = "223.185.61.116"
+
+        st.info(f"🌐 **Server Outbound IP:** `{detected_ip}`\n\n*(Add this to your Delta API Key whitelist)*")
+
         api_key_input = st.text_input(
             "API Key",
             value=os.getenv("DELTA_API_KEY", ""),
