@@ -668,10 +668,10 @@ with st.sidebar:
 
     # 5. AI Conviction & Targets
     with st.expander("🎯 **AI Conviction & Strategy**", expanded=False):
-        prob_threshold = st.slider("Min Probability Cutoff", 0.50, 0.75, step=0.01, format="%.2f", key="cfg_prob_threshold")
-        min_return_hurdle_pct = st.slider("Min Expected Return (%)", 0.05, 0.50, step=0.05, format="%.2f%%", key="cfg_min_return_hurdle")
+        prob_threshold = st.slider("Min Probability Cutoff", min_value=0.25, max_value=0.85, step=0.01, format="%.2f", key="cfg_prob_threshold")
+        min_return_hurdle_pct = st.slider("Min Expected Return (%)", min_value=0.01, max_value=0.50, step=0.01, format="%.2f%%", key="cfg_min_return_hurdle")
         min_return_hurdle = min_return_hurdle_pct / 100.0
-        take_profit_target_pct = st.slider("Take Profit (%)", 0.5, 5.0, step=0.1, format="%.1f%%", key="cfg_tp_target")
+        take_profit_target_pct = st.slider("Take Profit (%)", min_value=0.3, max_value=5.0, step=0.1, format="%.1f%%", key="cfg_tp_target")
         take_profit_target = take_profit_target_pct / 100.0
 
     # Automatically persist settings to disk whenever altered
