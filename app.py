@@ -481,10 +481,41 @@ def get_delta_symbols():
         return ["BTCUSD", "ETHUSD", "SOLUSD", "XRPUSD", "DOGEUSD"]
 
 
+# Factory Default Settings Configuration
+DEFAULT_SETTINGS = {
+    "cfg_mode": "Simulated Dry-Run (Safe)",
+    "cfg_url": "https://cdn-ind.testnet.deltaex.org",
+    "cfg_symbol": "BTCUSD",
+    "cfg_timeframe": "5m",
+    "cfg_timezone": "IST (India - UTC+5:30)",
+    "cfg_leverage": 10,
+    "cfg_sizing_mode": "Risk Budget %",
+    "cfg_fixed_contracts": 1,
+    "cfg_risk_pct": 0.3,
+    "cfg_prob_threshold": 0.58,
+    "cfg_min_return_hurdle": 0.15,
+    "cfg_tp_target": 1.6,
+}
+
+for _k, _v in DEFAULT_SETTINGS.items():
+    if _k not in st.session_state:
+        st.session_state[_k] = _v
+
+def reset_settings_callback():
+    for k, v in DEFAULT_SETTINGS.items():
+        st.session_state[k] = v
+    st.session_state["_reset_toast"] = True
+
+
 # === SIDEBAR CONTROLS ===
 with st.sidebar:
     st.markdown("## ⚡ **DELTA AI BOT**")
     st.caption("GRU Sequence AI • Perpetual Futures")
+
+    if st.session_state.get("_reset_toast", False):
+        st.toast("Settings restored to factory defaults!", icon="🔄")
+        st.session_state["_reset_toast"] = False
+
     st.divider()
 
     # 1. Trading Mode
@@ -492,7 +523,7 @@ with st.sidebar:
     mode_choice = st.radio(
         "Mode Selection",
         ["Simulated Dry-Run (Safe)", "Live Real Money (⚠️)"],
-        index=0 if os.getenv("DRY_RUN", "true").lower() == "true" else 1,
+        key="cfg_mode",
         help="Dry-run simulates order execution against live candles without risking capital.",
     )
     is_dry_run = "Dry-Run" in mode_choice
@@ -505,9 +536,10 @@ with st.sidebar:
             "https://testnet-api.delta.exchange",
             "https://api.delta.exchange",
         ]
-        saved_url = os.getenv("DELTA_BASE_URL", "https://cdn-ind.testnet.deltaex.org")
-        url_idx = base_urls.index(saved_url) if saved_url in base_urls else 0
-        selected_url = st.selectbox("API Base URL", base_urls, index=url_idx)
+        if st.session_state.get("cfg_url") not in base_urls:
+            st.session_state["cfg_url"] = base_urls[0]
+
+        selected_url = st.selectbox("API Base URL", base_urls, key="cfg_url")
 
         api_key_input = st.text_input(
             "API Key",
@@ -547,15 +579,21 @@ with st.sidebar:
     # 3. Pair & Timeframe Selection
     st.markdown("### 📊 **Market Selection**")
     available_symbols = get_delta_symbols()
-    symbol_selected = st.selectbox("Trading Pair", available_symbols, index=0)
-    timeframe_selected = st.selectbox("Timeframe", ["1m", "5m", "15m", "1h"], index=1)
+    if st.session_state.get("cfg_symbol") not in available_symbols:
+        st.session_state["cfg_symbol"] = available_symbols[0]
+
+    symbol_selected = st.selectbox("Trading Pair", available_symbols, key="cfg_symbol")
+    timeframe_selected = st.selectbox("Timeframe", ["1m", "5m", "15m", "1h"], key="cfg_timeframe")
 
     # Timezone Selector (Defaults to Indian Standard Time IST for Delta Exchange)
     tz_names = list(TIMEZONE_MAP.keys())
+    if st.session_state.get("cfg_timezone") not in tz_names:
+        st.session_state["cfg_timezone"] = tz_names[0]
+
     selected_tz_name = st.selectbox(
         "Display Timezone",
         tz_names,
-        index=0,
+        key="cfg_timezone",
         help="Local clock timezone for charts, header, and terminal logs. Defaults to IST (+5:30).",
     )
     active_tz, active_tz_abbr = TIMEZONE_MAP[selected_tz_name]
@@ -563,22 +601,24 @@ with st.sidebar:
 
     # 4. Sizing & Leverage
     st.markdown("### ⚙️ **Position & Leverage**")
-    leverage_val = st.slider("Leverage", min_value=1, max_value=50, value=10, step=1, format="%dx")
-    sizing_mode = st.radio("Order Sizing Mode", ["Risk Budget %", "Fixed Contracts"], index=0)
+    leverage_val = st.slider("Leverage", min_value=1, max_value=50, step=1, format="%dx", key="cfg_leverage")
+    sizing_mode = st.radio("Order Sizing Mode", ["Risk Budget %", "Fixed Contracts"], key="cfg_sizing_mode")
 
     if sizing_mode == "Fixed Contracts":
-        fixed_contracts = st.number_input("Contracts per Trade", min_value=1, max_value=1000, value=1, step=1)
+        fixed_contracts = st.number_input("Contracts per Trade", min_value=1, max_value=1000, step=1, key="cfg_fixed_contracts")
         risk_per_trade = 0.003
     else:
         fixed_contracts = 1
-        risk_pct = st.slider("Risk per Trade (% Equity)", min_value=0.1, max_value=2.0, value=0.3, step=0.1)
+        risk_pct = st.slider("Risk per Trade (% Equity)", min_value=0.1, max_value=2.0, step=0.1, key="cfg_risk_pct")
         risk_per_trade = risk_pct / 100.0
 
     # 5. AI Conviction & Targets
     with st.expander("🎯 **AI Conviction & Strategy**", expanded=False):
-        prob_threshold = st.slider("Min Probability Cutoff", 0.50, 0.75, 0.58, 0.01, format="%.2f")
-        min_return_hurdle = st.slider("Min Expected Return (%)", 0.05, 0.50, 0.15, 0.05, format="%.2f%%") / 100.0
-        take_profit_target = st.slider("Take Profit (%)", 0.5, 5.0, 1.6, 0.1, format="%.1f%%") / 100.0
+        prob_threshold = st.slider("Min Probability Cutoff", 0.50, 0.75, step=0.01, format="%.2f", key="cfg_prob_threshold")
+        min_return_hurdle_pct = st.slider("Min Expected Return (%)", 0.05, 0.50, step=0.05, format="%.2f%%", key="cfg_min_return_hurdle")
+        min_return_hurdle = min_return_hurdle_pct / 100.0
+        take_profit_target_pct = st.slider("Take Profit (%)", 0.5, 5.0, step=0.1, format="%.1f%%", key="cfg_tp_target")
+        take_profit_target = take_profit_target_pct / 100.0
 
     st.divider()
 
@@ -616,6 +656,16 @@ with st.sidebar:
         panic_res = bot_manager.panic_close()
         st.toast(f"Panic close executed: {panic_res}", icon="⚠️")
         st.rerun()
+
+    st.divider()
+
+    # 7. Reset to Default Settings
+    st.button(
+        "🔄 Reset to Default Settings",
+        on_click=reset_settings_callback,
+        use_container_width=True,
+        help="Instantly restores all trading pairs, timeframe, leverage, sizing, and AI strategy thresholds back to default values.",
+    )
 
 
 # === REAL-TIME DASHBOARD FRAGMENT ===
