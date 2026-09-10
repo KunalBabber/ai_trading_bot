@@ -8,6 +8,7 @@ API credentials management, live Plotly candlestick charting, and AI metrics.
 import os
 import time
 from datetime import datetime, timezone
+import json
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
@@ -23,6 +24,7 @@ from delta_client import DeltaClient
 from live_features import LiveFeatureEngine
 from train import GRUTradingModel
 from timezone_utils import IST_TZ, TIMEZONE_MAP, get_now, format_now
+from strategy import make_signal
 
 @st.cache_resource
 def get_preview_model():
@@ -481,7 +483,9 @@ def get_delta_symbols():
         return ["BTCUSD", "ETHUSD", "SOLUSD", "XRPUSD", "DOGEUSD"]
 
 
-# Factory Default Settings Configuration
+# Factory Default Settings & Persistence Configuration
+SETTINGS_FILE = "user_settings.json"
+
 DEFAULT_SETTINGS = {
     "cfg_mode": "Simulated Dry-Run (Safe)",
     "cfg_url": "https://cdn-ind.testnet.deltaex.org",
@@ -497,13 +501,44 @@ DEFAULT_SETTINGS = {
     "cfg_tp_target": 1.6,
 }
 
-for _k, _v in DEFAULT_SETTINGS.items():
-    if _k not in st.session_state:
+def load_persisted_settings():
+    settings = dict(DEFAULT_SETTINGS)
+    if os.path.exists(SETTINGS_FILE):
+        try:
+            with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
+                saved = json.load(f)
+            if isinstance(saved, dict):
+                settings.update(saved)
+        except Exception:
+            pass
+    return settings
+
+def save_persisted_settings():
+    current = {}
+    for k in DEFAULT_SETTINGS.keys():
+        if k in st.session_state:
+            current[k] = st.session_state[k]
+    try:
+        with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
+            json.dump(current, f, indent=2)
+    except Exception:
+        pass
+
+# Initialize session state from persisted settings (runs once per browser reload)
+if "_settings_initialized" not in st.session_state:
+    persisted = load_persisted_settings()
+    for _k, _v in persisted.items():
         st.session_state[_k] = _v
+    st.session_state["_settings_initialized"] = True
 
 def reset_settings_callback():
     for k, v in DEFAULT_SETTINGS.items():
         st.session_state[k] = v
+    try:
+        if os.path.exists(SETTINGS_FILE):
+            os.remove(SETTINGS_FILE)
+    except Exception:
+        pass
     st.session_state["_reset_toast"] = True
 
 
@@ -620,6 +655,21 @@ with st.sidebar:
         take_profit_target_pct = st.slider("Take Profit (%)", 0.5, 5.0, step=0.1, format="%.1f%%", key="cfg_tp_target")
         take_profit_target = take_profit_target_pct / 100.0
 
+    # Automatically persist settings to disk whenever altered
+    save_persisted_settings()
+
+    # Dynamically propagate updated strategy parameters to bot_manager if running
+    bot_manager.update_config({
+        "long_probability": prob_threshold,
+        "short_probability": prob_threshold,
+        "min_expected_return": min_return_hurdle,
+        "take_profit": take_profit_target,
+        "leverage": leverage_val,
+        "sizing_mode": "fixed" if sizing_mode == "Fixed Contracts" else "risk_budget",
+        "fixed_contracts": fixed_contracts,
+        "risk_per_trade": risk_per_trade,
+    })
+
     st.divider()
 
     # 6. Bot Action Buttons
@@ -670,7 +720,23 @@ with st.sidebar:
 
 # === REAL-TIME DASHBOARD FRAGMENT ===
 @st.fragment(run_every="3s")
-def render_dashboard(symbol: str, resolution: str, active_tz=IST_TZ, active_tz_abbr: str = "IST"):
+def render_dashboard(
+    symbol: str,
+    resolution: str,
+    active_tz=IST_TZ,
+    active_tz_abbr: str = "IST",
+    prob_threshold: float = 0.58,
+    min_return_hurdle: float = 0.0015,
+    take_profit_target: float = 0.016,
+):
+    # Ensure thresholds dynamically match current session state if modified in sidebar
+    if "cfg_prob_threshold" in st.session_state:
+        prob_threshold = float(st.session_state["cfg_prob_threshold"])
+    if "cfg_min_return_hurdle" in st.session_state:
+        min_return_hurdle = float(st.session_state["cfg_min_return_hurdle"]) / 100.0
+    if "cfg_tp_target" in st.session_state:
+        take_profit_target = float(st.session_state["cfg_tp_target"]) / 100.0
+
     state = bot_manager.get_state()
     is_running = state["is_running"]
     current_price = state["current_price"]
@@ -699,11 +765,22 @@ def render_dashboard(symbol: str, resolution: str, active_tz=IST_TZ, active_tz_a
             p_long = float(torch.sigmoid(l_t).item())
             p_short = float(torch.sigmoid(s_t).item())
             exp_ret = float(ret_t.item())
+            sig_prev = make_signal(
+                predicted_return=exp_ret,
+                p_long=p_long,
+                p_short=p_short,
+                trend_15m=metrics.get("trend_15m", 0.0),
+                trend_1h=metrics.get("trend_1h", 0.0),
+                atr_pct=metrics.get("atr_pct", 0.005),
+                long_probability=prob_threshold,
+                short_probability=prob_threshold,
+                min_expected_return=min_return_hurdle,
+            )
             predictions = {
                 "p_long": p_long,
                 "p_short": p_short,
                 "expected_return": exp_ret,
-                "signal_side": 0,
+                "signal_side": sig_prev.side,
             }
         except Exception:
             pass
@@ -767,8 +844,6 @@ def render_dashboard(symbol: str, resolution: str, active_tz=IST_TZ, active_tz_a
     # Metrics Row
     m1, m2, m3, m4, m5, m6 = st.columns(6)
 
-    sig_side = predictions.get("signal_side", 0)
-    sig_label = "BUY (+1)" if sig_side == 1 else ("SELL (-1)" if sig_side == -1 else "FLAT (0)")
     p_long = predictions.get("p_long", 0.5)
     p_short = predictions.get("p_short", 0.5)
     exp_ret = predictions.get("expected_return", 0.0)
@@ -777,6 +852,21 @@ def render_dashboard(symbol: str, resolution: str, active_tz=IST_TZ, active_tz_a
     t1h = metrics.get("trend_1h", 0.0)
     trend_15_str = "🟢 Bullish" if t15 > 0 else "🔴 Bearish"
     trend_1h_str = "🟢 Bullish" if t1h > 0 else "🔴 Bearish"
+
+    # Evaluate dynamic signal using current thresholds
+    dynamic_sig = make_signal(
+        predicted_return=exp_ret,
+        p_long=p_long,
+        p_short=p_short,
+        trend_15m=t15,
+        trend_1h=t1h,
+        atr_pct=metrics.get("atr_pct", 0.005),
+        long_probability=prob_threshold,
+        short_probability=prob_threshold,
+        min_expected_return=min_return_hurdle,
+    )
+    sig_side = dynamic_sig.side
+    sig_label = "BUY (+1)" if sig_side == 1 else ("SELL (-1)" if sig_side == -1 else "FLAT (0)")
 
     with m1:
         st.metric("AI Signal", sig_label)
@@ -805,8 +895,8 @@ def render_dashboard(symbol: str, resolution: str, active_tz=IST_TZ, active_tz_a
         )
 
     # === LIVE AI DECISION ENGINE & 4-STEP CHECKLIST HUD ===
-    c1_pass = (p_long >= 0.58) or (p_short >= 0.58)
-    c2_pass = abs(exp_ret) >= 0.0015
+    c1_pass = (p_long >= prob_threshold) or (p_short >= prob_threshold)
+    c2_pass = abs(exp_ret) >= min_return_hurdle
     c3_pass = (t15 > 0 if p_long >= p_short else t15 < 0)
     c4_pass = (t1h > 0 if p_long >= p_short else t1h < 0)
     all_pass = c1_pass and c2_pass and c3_pass and c4_pass
@@ -827,7 +917,7 @@ def render_dashboard(symbol: str, resolution: str, active_tz=IST_TZ, active_tz_a
                     {tag1}
                 </div>
                 <div style="font-size: 1.15rem; font-weight: 700; color: {'#38bdf8' if c1_pass else '#94a3b8'};">
-                    {best_odds:.1f}% <span style="font-size: 0.75rem; color: #64748b;">(Need &ge; 58%)</span>
+                    {best_odds:.1f}% <span style="font-size: 0.75rem; color: #64748b;">(Need &ge; {prob_threshold * 100:.0f}%)</span>
                 </div>
                 <div style="font-size: 0.76rem; color: #8b949e; margin-top: 4px;">
                     P(L): {p_long*100:.1f}% | P(S): {p_short*100:.1f}%
@@ -848,7 +938,7 @@ def render_dashboard(symbol: str, resolution: str, active_tz=IST_TZ, active_tz_a
                     {tag2}
                 </div>
                 <div style="font-size: 1.15rem; font-weight: 700; color: {'#38bdf8' if c2_pass else '#94a3b8'};">
-                    {exp_ret*100:+.2f}% <span style="font-size: 0.75rem; color: #64748b;">(Need &ge; +0.15%)</span>
+                    {exp_ret*100:+.2f}% <span style="font-size: 0.75rem; color: #64748b;">(Need &ge; +{min_return_hurdle * 100:.2f}%)</span>
                 </div>
                 <div style="font-size: 0.76rem; color: #8b949e; margin-top: 4px;">
                     Predicted move covers fee + slippage
@@ -916,8 +1006,8 @@ def render_dashboard(symbol: str, resolution: str, active_tz=IST_TZ, active_tz_a
         """
     else:
         reasons_needed = []
-        if not c1_pass: reasons_needed.append(f"AI Odds ({best_odds:.1f}% < 58%)")
-        if not c2_pass: reasons_needed.append("Profit Hurdle")
+        if not c1_pass: reasons_needed.append(f"AI Odds ({best_odds:.1f}% < {prob_threshold * 100:.0f}%)")
+        if not c2_pass: reasons_needed.append(f"Profit Hurdle ({exp_ret*100:+.2f}% < +{min_return_hurdle * 100:.2f}%)")
         if not c3_pass: reasons_needed.append("15m Trend Alignment")
         if not c4_pass: reasons_needed.append("1h Macro Trend Alignment")
         reason_txt = ", ".join(reasons_needed)
@@ -1148,7 +1238,7 @@ def render_dashboard(symbol: str, resolution: str, active_tz=IST_TZ, active_tz_a
                 col=1,
             )
         else:
-            tp_pending = latest_close * 1.016
+            tp_pending = latest_close * (1.0 + take_profit_target)
             sl_pending = latest_close * (1.0 - 0.008)
             fig.add_trace(
                 go.Scatter(
@@ -1156,7 +1246,7 @@ def render_dashboard(symbol: str, resolution: str, active_tz=IST_TZ, active_tz_a
                     y=[tp_pending, tp_pending],
                     mode="lines",
                     line=dict(color="#2ecc71", width=1.8, dash="dashdot"),
-                    name=f"Pending TP: ${tp_pending:,.1f} (+1.6%)",
+                    name=f"Pending TP: ${tp_pending:,.1f} (+{take_profit_target * 100:.1f}%)",
                 ),
                 row=1,
                 col=1,
@@ -1363,4 +1453,12 @@ def render_dashboard(symbol: str, resolution: str, active_tz=IST_TZ, active_tz_a
 
 
 # Render main interactive dashboard
-render_dashboard(symbol_selected, timeframe_selected, active_tz, active_tz_abbr)
+render_dashboard(
+    symbol=symbol_selected,
+    resolution=timeframe_selected,
+    active_tz=active_tz,
+    active_tz_abbr=active_tz_abbr,
+    prob_threshold=prob_threshold,
+    min_return_hurdle=min_return_hurdle,
+    take_profit_target=take_profit_target,
+)

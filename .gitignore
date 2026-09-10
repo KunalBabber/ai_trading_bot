@@ -36,8 +36,9 @@ Thumbs.db
 .vscode/
 .idea/
 
-# Streamlit local secrets
+# Streamlit local secrets & persisted user settings
 .streamlit/secrets.toml
+user_settings.json
 
 # Large temporary datasets (keep lightweight sample data)
 data/*.parquet

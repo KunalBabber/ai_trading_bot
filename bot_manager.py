@@ -85,6 +85,7 @@ class TradingBotManager:
         self.model: Optional[GRUTradingModel] = None
         self.feature_engine: Optional[LiveFeatureEngine] = None
         self.product_specs: Dict[str, Any] = {}
+        self.live_config: Dict[str, Any] = {}
         # Default Timezone: IST (+05:30)
         self.tz = IST_TZ
         self.tz_name = "IST"
@@ -94,6 +95,11 @@ class TradingBotManager:
         with self.state_lock:
             self.tz = tz
             self.tz_name = name
+
+    def update_config(self, new_params: Dict[str, Any]):
+        """Dynamically update strategy parameters while bot is running."""
+        with self.state_lock:
+            self.live_config.update(new_params)
 
     def now_dt(self) -> datetime:
         """Returns current datetime in bot's configured timezone."""
@@ -406,18 +412,21 @@ class TradingBotManager:
         poll_sec = config.get("poll_interval", 15)
         last_bar_time = None
 
-        # Strategy parameters
-        long_prob_threshold = config.get("long_probability", 0.58)
-        short_prob_threshold = config.get("short_probability", 0.58)
-        min_expected_return = config.get("min_expected_return", 0.0015)
-        take_profit_target = config.get("take_profit", 0.016)
-        sizing_mode = config.get("sizing_mode", "risk_budget")  # 'fixed' or 'risk_budget'
-        fixed_contracts = config.get("fixed_contracts", 1)
-        risk_per_trade = config.get("risk_per_trade", 0.003)
+        with self.state_lock:
+            self.live_config = dict(config)
 
         # Main Trading Loop
         while not self.stop_event.is_set():
             try:
+                # Dynamic strategy parameters from live_config
+                with self.state_lock:
+                    long_prob_threshold = self.live_config.get("long_probability", 0.58)
+                    short_prob_threshold = self.live_config.get("short_probability", 0.58)
+                    min_expected_return = self.live_config.get("min_expected_return", 0.0015)
+                    take_profit_target = self.live_config.get("take_profit", 0.016)
+                    sizing_mode = self.live_config.get("sizing_mode", "risk_budget")
+                    fixed_contracts = self.live_config.get("fixed_contracts", 1)
+                    risk_per_trade = self.live_config.get("risk_per_trade", 0.003)
                 # 1. Fetch Candles
                 candles = self.client.fetch_candles(self.symbol, self.resolution, limit=350)
                 if len(candles) < base_cfg["data"]["sequence_length"] + 60:
