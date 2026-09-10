@@ -466,30 +466,51 @@ def render_smart_terminal_html(symbol: str, resolution: str, is_running: bool, s
     </html>
     """
 
-# Fetch available live perpetuals from Delta API
-@st.cache_data(ttl=300)
-def get_delta_symbols():
-    try:
-        c = DeltaClient(timeout=3)
-        prods = c.get_products()
-        live_perps = [
-            p["symbol"] for p in prods
-            if p.get("contract_type") == "perpetual_futures" and p.get("state") == "live"
-        ]
-        priority = ["BTCUSD", "ETHUSD", "SOLUSD", "XRPUSD", "DOGEUSD", "ADAUSD"]
-        ordered = [s for s in priority if s in live_perps] + [s for s in live_perps if s not in priority]
-        return ordered if ordered else ["BTCUSD", "ETHUSD", "SOLUSD"]
-    except Exception:
-        return ["BTCUSD", "ETHUSD", "SOLUSD", "XRPUSD", "DOGEUSD"]
+DEFAULT_SYMBOLS = ["BTCUSD", "ETHUSD", "SOLUSD", "XRPUSD", "DOGEUSD", "ADAUSD"]
 
-# Cached candle fetch for preview when the bot engine is not actively polling
-@st.cache_data(ttl=15)
-def get_preview_candles(symbol: str, resolution: str) -> pd.DataFrame:
+# Fetch available live perpetuals
+@st.cache_data(ttl=600)
+def get_delta_symbols():
+    return list(DEFAULT_SYMBOLS)
+
+# Cached candle fetch & preview inference when the bot is stopped (cached 60s to prevent CPU thrashing)
+@st.cache_data(ttl=60)
+def get_market_preview(symbol: str, resolution: str, prob_threshold: float, min_return_hurdle: float):
     try:
         c = DeltaClient(timeout=4)
-        return c.fetch_candles(symbol, resolution, limit=160)
+        candles = c.fetch_candles(symbol, resolution, limit=160)
+        if candles.empty or len(candles) < 96:
+            return candles, 0.0, {}, {"p_long": 0.5, "p_short": 0.5, "expected_return": 0.0, "signal_side": 0}
+
+        current_price = float(candles["close"].iloc[-1])
+        model_prev, engine_prev = get_preview_model()
+        tensor, comp_metrics = engine_prev.process_candles(candles)
+        with torch.no_grad():
+            ret_t, l_t, s_t = model_prev(tensor)
+        p_long = float(torch.sigmoid(l_t).item())
+        p_short = float(torch.sigmoid(s_t).item())
+        exp_ret = float(ret_t.item())
+        sig_prev = make_signal(
+            predicted_return=exp_ret,
+            p_long=p_long,
+            p_short=p_short,
+            trend_15m=comp_metrics.get("trend_15m", 0.0),
+            trend_1h=comp_metrics.get("trend_1h", 0.0),
+            atr_pct=comp_metrics.get("atr_pct", 0.005),
+            long_probability=prob_threshold,
+            short_probability=prob_threshold,
+            min_expected_return=min_return_hurdle,
+        )
+        predictions = {
+            "p_long": p_long,
+            "p_short": p_short,
+            "expected_return": exp_ret,
+            "signal_side": sig_prev.side,
+        }
+        return candles, current_price, comp_metrics, predictions
     except Exception:
-        return pd.DataFrame()
+        return pd.DataFrame(), 0.0, {}, {"p_long": 0.5, "p_short": 0.5, "expected_return": 0.0, "signal_side": 0}
+
 
 
 # Factory Default Settings & Persistence Configuration
@@ -760,7 +781,7 @@ with st.sidebar:
 
 
 # === REAL-TIME DASHBOARD FRAGMENT ===
-@st.fragment(run_every="3s")
+@st.fragment(run_every="5s")
 def render_dashboard(
     symbol: str,
     resolution: str,
@@ -789,42 +810,19 @@ def render_dashboard(
     logs = state["recent_logs"]
     specs = state["product_specs"]
 
-    # Fallback to fetch candles & evaluate live AI preview if bot not running yet
-    if candles.empty:
-        candles = get_preview_candles(symbol, resolution)
-        if not candles.empty:
-            current_price = float(candles["close"].iloc[-1])
+    # When bot is not running, use cached AI preview (cached for 60 seconds to prevent CPU overload)
+    if not is_running or candles.empty:
+        prev_candles, prev_price, prev_metrics, prev_preds = get_market_preview(
+            symbol, resolution, prob_threshold, min_return_hurdle
+        )
+        if not prev_candles.empty:
+            candles = prev_candles
+            current_price = prev_price
+            if not metrics:
+                metrics = prev_metrics
+            if not predictions or predictions.get("expected_return", 0.0) == 0.0:
+                predictions = prev_preds
 
-
-    if (not is_running or not metrics) and len(candles) >= 96:
-        try:
-            model_prev, engine_prev = get_preview_model()
-            tensor, comp_metrics = engine_prev.process_candles(candles)
-            metrics = comp_metrics
-            with torch.no_grad():
-                ret_t, l_t, s_t = model_prev(tensor)
-            p_long = float(torch.sigmoid(l_t).item())
-            p_short = float(torch.sigmoid(s_t).item())
-            exp_ret = float(ret_t.item())
-            sig_prev = make_signal(
-                predicted_return=exp_ret,
-                p_long=p_long,
-                p_short=p_short,
-                trend_15m=metrics.get("trend_15m", 0.0),
-                trend_1h=metrics.get("trend_1h", 0.0),
-                atr_pct=metrics.get("atr_pct", 0.005),
-                long_probability=prob_threshold,
-                short_probability=prob_threshold,
-                min_expected_return=min_return_hurdle,
-            )
-            predictions = {
-                "p_long": p_long,
-                "p_short": p_short,
-                "expected_return": exp_ret,
-                "signal_side": sig_prev.side,
-            }
-        except Exception:
-            pass
 
     # Header Ribbon & Overall P&L Calculations
     total_realized_pnl = sum(float(t.get("pnl", 0.0)) for t in trade_history)
