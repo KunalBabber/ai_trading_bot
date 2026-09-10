@@ -767,6 +767,28 @@ def render_dashboard(
     logs = state["recent_logs"]
     specs = state["product_specs"]
 
+    # Verify live position with Delta Exchange to detect manual/external closes
+    if position.get("side", 0) != 0:
+        try:
+            client_sync = DeltaClient(dry_run=False)
+            p_obj = client_sync.get_product(symbol)
+            if p_obj:
+                delta_pos = client_sync.get_position_for_product(p_obj["id"])
+                if not delta_pos or int(delta_pos.get("size", 0)) == 0:
+                    position = {
+                        "side": 0,
+                        "size": 0,
+                        "entry_price": 0.0,
+                        "stop_loss": 0.0,
+                        "take_profit": 0.0,
+                        "unrealized_pnl": 0.0,
+                        "unrealized_pnl_pct": 0.0,
+                    }
+                    with bot_manager.state_lock:
+                        bot_manager.active_position = dict(position)
+        except Exception:
+            pass
+
     # Fallback to fetch candles & evaluate live AI preview if bot not running yet
     if candles.empty:
         client_fallback = DeltaClient()

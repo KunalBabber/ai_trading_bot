@@ -148,7 +148,7 @@ class TradingBotManager:
             }
 
     def update_balance(self, api_key: str, api_secret: str, base_url: str) -> Dict[str, Any]:
-        """Fetch and update live wallet balance from Delta Exchange."""
+        """Fetch and update live wallet balance and open positions from Delta Exchange."""
         if not api_key or not api_secret:
             return {"success": False, "error": "API Key and Secret required"}
         try:
@@ -162,15 +162,50 @@ class TradingBotManager:
             res = client._request("GET", "/v2/wallet/balances", authenticated=True)
             if res.get("success", False):
                 balances = res.get("result", [])
+                total_usd = sum(
+                    float(b.get("balance", 0.0))
+                    for b in balances
+                    if b.get("asset_symbol") in ["USD", "USDT"] or float(b.get("balance", 0.0)) > 0
+                )
                 with self.state_lock:
                     self.balances_breakdown = balances
-                    # Sum balance for liquid assets (USD, USDT, or any with positive value)
-                    total_usd = sum(
-                        float(b.get("balance", 0.0))
-                        for b in balances
-                        if b.get("asset_symbol") in ["USD", "USDT"] or float(b.get("balance", 0.0)) > 0
-                    )
                     self.wallet_equity = total_usd
+
+                # Sync live open positions from Delta Exchange
+                try:
+                    positions = client.get_positions()
+                    matching_pos = None
+                    for p in positions:
+                        if p.get("product_symbol") == self.symbol or p.get("product_id") == self.product_specs.get("id"):
+                            matching_pos = p
+                            break
+                    with self.state_lock:
+                        if matching_pos and int(matching_pos.get("size", 0)) != 0:
+                            sz = int(matching_pos["size"])
+                            ep = float(matching_pos.get("entry_price", 0.0))
+                            upnl = float(matching_pos.get("unrealized_pnl", 0.0))
+                            self.active_position = {
+                                "side": 1 if sz > 0 else -1,
+                                "size": abs(sz),
+                                "entry_price": ep,
+                                "stop_loss": 0.0,
+                                "take_profit": 0.0,
+                                "unrealized_pnl": upnl,
+                                "unrealized_pnl_pct": 0.0,
+                            }
+                        else:
+                            self.active_position = {
+                                "side": 0,
+                                "size": 0,
+                                "entry_price": 0.0,
+                                "stop_loss": 0.0,
+                                "take_profit": 0.0,
+                                "unrealized_pnl": 0.0,
+                                "unrealized_pnl_pct": 0.0,
+                            }
+                except Exception:
+                    pass
+
                 return {"success": True, "equity": self.wallet_equity, "balances": balances}
             else:
                 return {"success": False, "error": res.get("error", "Failed to fetch balances")}
@@ -383,6 +418,38 @@ class TradingBotManager:
             else:
                 self.log(f"[WARN] Could not set leverage on exchange. Using default.")
 
+            # 4.5 Sync Initial Live Position from Delta Exchange
+            try:
+                live_pos = self.client.get_position_for_product(product_id)
+                with self.state_lock:
+                    if live_pos and int(live_pos.get("size", 0)) != 0:
+                        sz = int(live_pos["size"])
+                        ep = float(live_pos.get("entry_price", 0.0))
+                        upnl = float(live_pos.get("unrealized_pnl", 0.0))
+                        self.active_position = {
+                            "side": 1 if sz > 0 else -1,
+                            "size": abs(sz),
+                            "entry_price": ep,
+                            "stop_loss": 0.0,
+                            "take_profit": 0.0,
+                            "unrealized_pnl": upnl,
+                            "unrealized_pnl_pct": 0.0,
+                        }
+                        self.log(f"Active position synced from Delta: {'LONG' if sz > 0 else 'SHORT'} {abs(sz)}x @ ${ep:,.1f}")
+                    else:
+                        self.active_position = {
+                            "side": 0,
+                            "size": 0,
+                            "entry_price": 0.0,
+                            "stop_loss": 0.0,
+                            "take_profit": 0.0,
+                            "unrealized_pnl": 0.0,
+                            "unrealized_pnl_pct": 0.0,
+                        }
+                        self.log("Delta Exchange position: FLAT (No active positions).")
+            except Exception as e:
+                self.log(f"[WARN] Could not sync initial position: {e}")
+
         # 5. Load Models
         try:
             with open("config.yaml", "r", encoding="utf-8") as f:
@@ -477,17 +544,64 @@ class TradingBotManager:
                         "signal_side": signal.side,
                     }
 
-                    # Update Unrealized PnL
-                    pos = self.active_position
-                    if pos["side"] != 0:
-                        pnl_pct = pos["side"] * (current_price / pos["entry_price"] - 1.0)
-                        pos["unrealized_pnl_pct"] = pnl_pct * 100.0
-                        pos["unrealized_pnl"] = (
-                            pos["side"]
-                            * (current_price / pos["entry_price"] - 1.0)
-                            * (pos["size"] * contract_val * pos["entry_price"])
-                        )
+                # Sync live position directly from Delta Exchange on each scan cycle
+                if not self.client.dry_run and product_id:
+                    try:
+                        live_pos = self.client.get_position_for_product(product_id)
+                        with self.state_lock:
+                            if live_pos and int(live_pos.get("size", 0)) != 0:
+                                sz = int(live_pos["size"])
+                                real_side = 1 if sz > 0 else -1
+                                abs_sz = abs(sz)
+                                ep = float(live_pos.get("entry_price", current_price))
+                                un_pnl = float(live_pos.get("unrealized_pnl", 0.0))
+                                self.active_position["side"] = real_side
+                                self.active_position["size"] = abs_sz
+                                self.active_position["entry_price"] = ep
+                                self.active_position["unrealized_pnl"] = un_pnl
+                                if ep > 0:
+                                    self.active_position["unrealized_pnl_pct"] = real_side * (current_price / ep - 1.0) * 100.0
+                            else:
+                                # Exchange has no open position
+                                if self.active_position["side"] != 0:
+                                    realized_val = self.active_position["unrealized_pnl"]
+                                    self.log(f"[SYNC] Delta Exchange position closed externally. Realized PnL: ${realized_val:+.2f}")
+                                    self.trade_history.append({
+                                        "time": self.now_str("%Y-%m-%d %I:%M:%S %p"),
+                                        "symbol": self.symbol,
+                                        "side": "BUY (Long)" if self.active_position["side"] == 1 else "SELL (Short)",
+                                        "size": self.active_position["size"],
+                                        "entry": self.active_position["entry_price"],
+                                        "exit": current_price,
+                                        "pnl": realized_val,
+                                        "reason": "DELTA_MANUAL_CLOSE",
+                                    })
+                                    self.active_position = {
+                                        "side": 0,
+                                        "size": 0,
+                                        "entry_price": 0.0,
+                                        "stop_loss": 0.0,
+                                        "take_profit": 0.0,
+                                        "unrealized_pnl": 0.0,
+                                        "unrealized_pnl_pct": 0.0,
+                                    }
+                    except Exception:
+                        pass
+                else:
+                    # Dry run simulated position PnL calculation
+                    with self.state_lock:
+                        pos = self.active_position
+                        if pos["side"] != 0:
+                            pnl_pct = pos["side"] * (current_price / pos["entry_price"] - 1.0)
+                            pos["unrealized_pnl_pct"] = pnl_pct * 100.0
+                            pos["unrealized_pnl"] = (
+                                pos["side"]
+                                * (current_price / pos["entry_price"] - 1.0)
+                                * (pos["size"] * contract_val * pos["entry_price"])
+                            )
 
+                with self.state_lock:
+                    pos = dict(self.active_position)
                     self.cycle_count += 1
                     self.last_heartbeat = time.time()
 
@@ -552,6 +666,38 @@ class TradingBotManager:
 
         if pos["side"] == 0:
             return
+
+        # Check if position was closed externally on Delta Exchange
+        product_id = specs.get("id")
+        if not self.client.dry_run and product_id:
+            try:
+                live_pos = self.client.get_position_for_product(product_id)
+                if not live_pos or int(live_pos.get("size", 0)) == 0:
+                    with self.state_lock:
+                        pnl_dollar = pos["unrealized_pnl"]
+                        self.trade_history.append({
+                            "time": self.now_str("%Y-%m-%d %I:%M:%S %p"),
+                            "symbol": self.symbol,
+                            "side": "BUY (Long)" if pos["side"] == 1 else "SELL (Short)",
+                            "size": pos["size"],
+                            "entry": pos["entry_price"],
+                            "exit": current_price,
+                            "pnl": pnl_dollar,
+                            "reason": "DELTA_EXCHANGE_CLOSE",
+                        })
+                        self.active_position = {
+                            "side": 0,
+                            "size": 0,
+                            "entry_price": 0.0,
+                            "stop_loss": 0.0,
+                            "take_profit": 0.0,
+                            "unrealized_pnl": 0.0,
+                            "unrealized_pnl_pct": 0.0,
+                        }
+                    self.log(f"[SYNC] Position was closed directly on Delta Exchange. Status: FLAT (Realized PnL: ${pnl_dollar:+.2f}).")
+                    return
+            except Exception:
+                pass
 
         exit_reason = None
         if pos["side"] == +1:
