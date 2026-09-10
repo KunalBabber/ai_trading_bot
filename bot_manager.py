@@ -491,10 +491,12 @@ class TradingBotManager:
                 # 6. Check Exits (Stop Loss / Take Profit)
                 self._check_and_handle_exits(current_price, contract_val)
 
-                # 7. Check Entries on New Candle Close (or if flat)
+                # 7. Check Entries: on candle bar close OR immediately when FLAT with confirmed signal
                 is_new_bar = (last_bar_time is None) or (bar_time > last_bar_time)
-                if is_new_bar:
-                    if signal.side == 0 and pos["side"] == 0:
+                is_flat_entry = (pos["side"] == 0 and signal.side != 0)
+
+                if is_new_bar or is_flat_entry:
+                    if signal.side == 0 and pos["side"] == 0 and is_new_bar:
                         reasons = []
                         if p_long < long_prob_threshold and p_short < short_prob_threshold:
                             reasons.append(f"AI Odds ({max(p_long, p_short)*100:.1f}%) < {long_prob_threshold*100:.0f}%")
@@ -517,7 +519,8 @@ class TradingBotManager:
                         risk_per_trade=risk_per_trade,
                         take_profit_target=take_profit_target,
                     )
-                    last_bar_time = bar_time
+                    if is_new_bar:
+                        last_bar_time = bar_time
 
             except Exception as e:
                 self.log(f"[LOOP ERROR] {str(e)}")
@@ -597,6 +600,10 @@ class TradingBotManager:
         with self.state_lock:
             pos = dict(self.active_position)
 
+        # If already holding a position in the same direction, do not duplicate/pyramid
+        if pos["side"] == signal.side:
+            return
+
         # Handle reversal
         if pos["side"] != 0 and pos["side"] != signal.side:
             self.log("[REVERSAL] Closing existing position to enter opposite signal.")
@@ -656,7 +663,11 @@ class TradingBotManager:
                 }
             self.log(f"[OK] Position established: {side_str.upper()} {contracts} contracts.")
         else:
-            self.log(f"[REJECTED] {order_res.get('error')}")
+            err = order_res.get('error')
+            if "ip_not_whitelisted" in str(err):
+                self.log("[REJECTED] IP not whitelisted on Delta Exchange! Please remove IP restriction from your Delta API key settings.")
+            else:
+                self.log(f"[REJECTED] {err}")
 
 
 # Singleton instance
