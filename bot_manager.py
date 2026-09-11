@@ -92,14 +92,25 @@ class TradingBotManager:
 
     def set_timezone(self, tz, name: str = "IST"):
         """Update active timezone for bot logs and timestamps."""
-        with self.state_lock:
+        acquired = self.state_lock.acquire(timeout=1.0)
+        if acquired:
+            try:
+                self.tz = tz
+                self.tz_name = name
+            finally:
+                self.state_lock.release()
+        else:
             self.tz = tz
             self.tz_name = name
 
     def update_config(self, new_params: Dict[str, Any]):
         """Dynamically update strategy parameters while bot is running."""
-        with self.state_lock:
-            self.live_config.update(new_params)
+        acquired = self.state_lock.acquire(timeout=1.0)
+        if acquired:
+            try:
+                self.live_config.update(new_params)
+            finally:
+                self.state_lock.release()
 
     def now_dt(self) -> datetime:
         """Returns current datetime in bot's configured timezone."""
@@ -113,18 +124,52 @@ class TradingBotManager:
         """Append log message with localized timestamp."""
         ts = self.now_str("%I:%M:%S %p")
         entry = f"[{ts}] {message}"
-        with self.state_lock:
-            self.recent_logs.append(entry)
+        acquired = self.state_lock.acquire(timeout=1.0)
+        if acquired:
+            try:
+                self.recent_logs.append(entry)
+            finally:
+                self.state_lock.release()
 
     def clear_logs(self):
         """Clear recent terminal logs."""
-        with self.state_lock:
-            self.recent_logs.clear()
+        acquired = self.state_lock.acquire(timeout=1.0)
+        if acquired:
+            try:
+                self.recent_logs.clear()
+            finally:
+                self.state_lock.release()
         self.log("Terminal log cleared.")
 
     def get_state(self) -> Dict[str, Any]:
         """Thread-safe snapshot of bot state for UI rendering."""
-        with self.state_lock:
+        acquired = self.state_lock.acquire(timeout=1.0)
+        if acquired:
+            try:
+                return {
+                    "is_running": self.is_running,
+                    "mode": self.mode,
+                    "symbol": self.symbol,
+                    "resolution": self.resolution,
+                    "leverage": self.leverage,
+                    "status_message": self.status_message,
+                    "current_price": self.current_price,
+                    "candle_df": self.candle_df.copy() if not self.candle_df.empty else pd.DataFrame(),
+                    "metrics": dict(self.metrics),
+                    "predictions": dict(self.predictions),
+                    "active_position": dict(self.active_position),
+                    "simulated_equity": self.simulated_equity,
+                    "wallet_equity": self.wallet_equity,
+                    "balances_breakdown": list(self.balances_breakdown),
+                    "trade_history": list(self.trade_history),
+                    "recent_logs": list(self.recent_logs),
+                    "product_specs": dict(self.product_specs),
+                    "cycle_count": self.cycle_count,
+                    "last_heartbeat": self.last_heartbeat,
+                }
+            finally:
+                self.state_lock.release()
+        else:
             return {
                 "is_running": self.is_running,
                 "mode": self.mode,
@@ -133,7 +178,7 @@ class TradingBotManager:
                 "leverage": self.leverage,
                 "status_message": self.status_message,
                 "current_price": self.current_price,
-                "candle_df": self.candle_df.copy() if not self.candle_df.empty else pd.DataFrame(),
+                "candle_df": pd.DataFrame(),
                 "metrics": dict(self.metrics),
                 "predictions": dict(self.predictions),
                 "active_position": dict(self.active_position),
@@ -146,6 +191,7 @@ class TradingBotManager:
                 "cycle_count": self.cycle_count,
                 "last_heartbeat": self.last_heartbeat,
             }
+
 
     def update_balance(self, api_key: str, api_secret: str, base_url: str) -> Dict[str, Any]:
         """Fetch and update live wallet balance and open positions from Delta Exchange."""
