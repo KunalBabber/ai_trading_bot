@@ -1,0 +1,55 @@
+{
+  "total_trades": 1,
+  "wins": 1,
+  "losses": 0,
+  "win_rate": 100.0,
+  "rolling_win_rate": 100.0,
+  "recent_pnls": [
+    134.0
+  ],
+  "regime_stats": {
+    "BULL_MOMENTUM": {
+      "trades": 0,
+      "wins": 0,
+      "losses": 0,
+      "win_rate": 0.0
+    },
+    "BEAR_MOMENTUM": {
+      "trades": 0,
+      "wins": 0,
+      "losses": 0,
+      "win_rate": 0.0
+    },
+    "CHOPPY_RANGE": {
+      "trades": 1,
+      "wins": 1,
+      "losses": 0,
+      "win_rate": 100.0
+    },
+    "HIGH_VOLATILITY": {
+      "trades": 0,
+      "wins": 0,
+      "losses": 0,
+      "win_rate": 0.0
+    }
+  },
+  "active_adaptations": {
+    "defense_mode": false,
+    "conviction_bias": 0.0,
+    "sl_buffer_multiplier": 1.0,
+    "tp_target_multiplier": 1.1
+  },
+  "reflections": [
+    {
+      "time": "2026-09-27 08:04:58 PM",
+      "side": "BUY (Long)",
+      "entry": 84000.0,
+      "exit": 85340.0,
+      "pnl": 134.0,
+      "is_win": true,
+      "regime": "CHOPPY_RANGE",
+      "exit_reason": "Take Profit",
+      "lesson_learned": "Trade WIN (+$134.00) on BUY (Long) in CHOPPY_RANGE. Take-Profit target achieved smoothly. Entry conviction was justified."
+    }
+  ]
+}

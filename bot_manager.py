@@ -14,6 +14,7 @@ import pandas as pd
 import torch
 import yaml
 from dotenv import set_key
+from dataclasses import asdict
 
 from delta_client import DeltaClient
 from live_features import LiveFeatureEngine
@@ -21,6 +22,7 @@ from model import GRUTradingModel
 from features import FEATURE_COLUMNS
 from strategy import make_signal, position_fraction
 from timezone_utils import IST_TZ, get_now
+from agent_brain import agent_brain, AgentThought
 
 
 class TradingBotManager:
@@ -78,6 +80,7 @@ class TradingBotManager:
         self.recent_logs = deque(maxlen=200)
         self.cycle_count = 0
         self.last_heartbeat = time.time()
+        self.latest_thought: Optional[Dict[str, Any]] = None
 
         # Model & Engines
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -166,6 +169,8 @@ class TradingBotManager:
                     "product_specs": dict(self.product_specs),
                     "cycle_count": self.cycle_count,
                     "last_heartbeat": self.last_heartbeat,
+                    "agent_thought": dict(self.latest_thought) if self.latest_thought else None,
+                    "agent_memory": agent_brain.memory.data,
                 }
             finally:
                 self.state_lock.release()
@@ -190,6 +195,8 @@ class TradingBotManager:
                 "product_specs": dict(self.product_specs),
                 "cycle_count": self.cycle_count,
                 "last_heartbeat": self.last_heartbeat,
+                "agent_thought": dict(self.latest_thought) if self.latest_thought else None,
+                "agent_memory": agent_brain.memory.data,
             }
 
 
@@ -379,6 +386,16 @@ class TradingBotManager:
                 "pnl": pnl_dollar,
                 "reason": "PANIC_CLOSE",
             })
+            reflection = agent_brain.reflect_on_trade(
+                trade_data={
+                    "side": "BUY (Long)" if pos["side"] == 1 else "SELL (Short)",
+                    "entry": pos["entry_price"],
+                    "exit": price,
+                    "pnl": pnl_dollar,
+                    "reason": "PANIC_CLOSE",
+                },
+                entry_regime=pos.get("entry_regime", "CHOPPY_RANGE"),
+            )
             self.active_position = {
                 "side": 0,
                 "size": 0,
@@ -389,6 +406,7 @@ class TradingBotManager:
                 "unrealized_pnl_pct": 0.0,
             }
         self.log(f"[PANIC] Position closed. Realized PnL: ${pnl_dollar:+.2f}")
+        self.log(f"🧠 [AGENT LESSON] {reflection.get('lesson_learned')}")
         return res
 
     def _run_loop(self, config: Dict[str, Any]):
@@ -661,6 +679,18 @@ class TradingBotManager:
                     self.cycle_count += 1
                     self.last_heartbeat = time.time()
 
+                # 4.5 Execute Cognitive Agent Deliberation
+                thought = agent_brain.deliberate(
+                    metrics=metrics,
+                    predictions=self.predictions,
+                    current_price=current_price,
+                    active_position=pos,
+                    cycle_count=self.cycle_count,
+                    cfg=self.live_config,
+                )
+                with self.state_lock:
+                    self.latest_thought = asdict(thought)
+
                 # Real-time Terminal Log Every Scan Cycle
                 sig_desc = "BUY (+1) 🚀" if signal.side == 1 else ("SELL (-1) 🔻" if signal.side == -1 else "FLAT (Wait)")
                 pos_desc = f"LONG ({pos['size']}x @ ${pos['entry_price']:,.1f})" if pos["side"] == 1 else (f"SHORT ({pos['size']}x @ ${pos['entry_price']:,.1f})" if pos["side"] == -1 else "FLAT")
@@ -671,6 +701,7 @@ class TradingBotManager:
                     f"AI Conviction: {best_conviction*100:.1f}% [{lean_tag}] | E(R): {expected_return*100:+.2f}% | "
                     f"Signal: {sig_desc} | Pos: {pos_desc}"
                 )
+                self.log(f"🧠 [AGENT BRAIN] Regime: {thought.regime} | {thought.reasoning_summary}")
 
                 # 6. Check Exits (Stop Loss / Take Profit)
                 self._check_and_handle_exits(current_price, contract_val)
@@ -704,6 +735,7 @@ class TradingBotManager:
                         fixed_contracts=fixed_contracts,
                         risk_per_trade=risk_per_trade,
                         take_profit_target=take_profit_target,
+                        thought=thought,
                     )
                     if is_new_bar:
                         last_bar_time = bar_time
@@ -744,6 +776,17 @@ class TradingBotManager:
                             "pnl": pnl_dollar,
                             "reason": "DELTA_EXCHANGE_CLOSE",
                         })
+                        entry_regime = pos.get("entry_regime", "CHOPPY_RANGE")
+                        reflection = agent_brain.reflect_on_trade(
+                            trade_data={
+                                "side": "BUY (Long)" if pos["side"] == 1 else "SELL (Short)",
+                                "entry": pos["entry_price"],
+                                "exit": current_price,
+                                "pnl": pnl_dollar,
+                                "reason": "DELTA_EXCHANGE_CLOSE",
+                            },
+                            entry_regime=entry_regime,
+                        )
                         self.active_position = {
                             "side": 0,
                             "size": 0,
@@ -754,6 +797,7 @@ class TradingBotManager:
                             "unrealized_pnl_pct": 0.0,
                         }
                     self.log(f"[SYNC] Position was closed directly on Delta Exchange. Status: FLAT (Realized PnL: ${pnl_dollar:+.2f}).")
+                    self.log(f"🧠 [AGENT LESSON] {reflection.get('lesson_learned')}")
                     return
             except Exception:
                 pass
@@ -789,6 +833,17 @@ class TradingBotManager:
                     "pnl": pnl_dollar,
                     "reason": exit_reason,
                 })
+                entry_regime = pos.get("entry_regime", "CHOPPY_RANGE")
+                reflection = agent_brain.reflect_on_trade(
+                    trade_data={
+                        "side": "BUY (Long)" if pos["side"] == 1 else "SELL (Short)",
+                        "entry": pos["entry_price"],
+                        "exit": current_price,
+                        "pnl": pnl_dollar,
+                        "reason": exit_reason,
+                    },
+                    entry_regime=entry_regime,
+                )
                 self.active_position = {
                     "side": 0,
                     "size": 0,
@@ -799,6 +854,7 @@ class TradingBotManager:
                     "unrealized_pnl_pct": 0.0,
                 }
             self.log(f"[CLOSED] Realized PnL: ${pnl_dollar:+.2f}")
+            self.log(f"🧠 [AGENT LESSON] {reflection.get('lesson_learned')}")
 
     def _check_and_handle_entries(
         self,
@@ -810,6 +866,7 @@ class TradingBotManager:
         fixed_contracts: int,
         risk_per_trade: float,
         take_profit_target: float,
+        thought: Optional[Any] = None,
     ):
         """Opens position if a trade signal is confirmed."""
         if signal.side == 0:
@@ -848,16 +905,24 @@ class TradingBotManager:
             contracts = max(1, int(notional / (current_price * contract_val)))
 
         side_str = "buy" if signal.side == +1 else "sell"
-        stop_dist = signal.stop_distance
+        # Dynamic brackets adapted by Agent Brain
+        if thought is not None:
+            stop_dist = thought.dynamic_sl_pct
+            tp_target = thought.dynamic_tp_pct
+            regime_tag = thought.regime
+        else:
+            stop_dist = signal.stop_distance
+            tp_target = take_profit_target
+            regime_tag = "CHOPPY_RANGE"
 
         if signal.side == +1:
             sl_price = round(current_price * (1.0 - stop_dist), 1)
-            tp_price = round(current_price * (1.0 + take_profit_target), 1)
+            tp_price = round(current_price * (1.0 + tp_target), 1)
         else:
             sl_price = round(current_price * (1.0 + stop_dist), 1)
-            tp_price = round(current_price * (1.0 - take_profit_target), 1)
+            tp_price = round(current_price * (1.0 - tp_target), 1)
 
-        self.log(f"[ORDER] Executing {side_str.upper()} {contracts} contracts @ {current_price:.1f} (SL: {sl_price}, TP: {tp_price})")
+        self.log(f"[ORDER] Executing {side_str.upper()} {contracts} contracts @ {current_price:.1f} (SL: {sl_price}, TP: {tp_price}) [Regime: {regime_tag}]")
 
         order_res = self.client.place_order(
             product_id=product_id,
@@ -878,8 +943,9 @@ class TradingBotManager:
                     "take_profit": tp_price,
                     "unrealized_pnl": 0.0,
                     "unrealized_pnl_pct": 0.0,
+                    "entry_regime": regime_tag,
                 }
-            self.log(f"[OK] Position established: {side_str.upper()} {contracts} contracts.")
+            self.log(f"[OK] Position established: {side_str.upper()} {contracts} contracts. Brain regime locked: {regime_tag}")
         else:
             err = order_res.get('error')
             if "ip_not_whitelisted" in str(err):

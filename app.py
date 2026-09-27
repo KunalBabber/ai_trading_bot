@@ -27,6 +27,8 @@ from live_features import LiveFeatureEngine
 from train import GRUTradingModel
 from timezone_utils import IST_TZ, TIMEZONE_MAP, get_now, format_now
 from strategy import make_signal
+from dataclasses import asdict
+from agent_brain import agent_brain, AgentThought
 
 @st.cache_resource
 def get_preview_model():
@@ -215,9 +217,43 @@ st.markdown(
         70% { transform: scale(1); box-shadow: 0 0 0 6px rgba(34, 197, 94, 0); }
         100% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(34, 197, 94, 0); }
     }
-    @keyframes blink {
-        0%, 100% { opacity: 1; }
-        50% { opacity: 0; }
+    .agent-brain-card {
+        background: linear-gradient(135deg, #091224 0%, #0d1e3d 100%);
+        border: 1px solid #1e3a8a;
+        border-radius: 12px;
+        padding: 16px 20px;
+        margin-bottom: 16px;
+        box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+    }
+    .agent-thought-stream {
+        background: rgba(3, 7, 18, 0.85);
+        border: 1px solid #1f293d;
+        border-radius: 8px;
+        padding: 14px 16px;
+        margin-top: 10px;
+        font-family: 'JetBrains Mono', 'Fira Code', monospace;
+        font-size: 0.82rem;
+        line-height: 1.6;
+        color: #e2e8f0;
+    }
+    .regime-badge {
+        display: inline-block;
+        padding: 3px 12px;
+        border-radius: 14px;
+        font-weight: 700;
+        font-size: 0.78rem;
+        letter-spacing: 0.04em;
+    }
+    .regime-bull { background: rgba(34, 197, 94, 0.18); color: #4ade80; border: 1px solid #22c55e; }
+    .regime-bear { background: rgba(239, 68, 68, 0.18); color: #f87171; border: 1px solid #ef4444; }
+    .regime-vol { background: rgba(245, 158, 11, 0.18); color: #fbbf24; border: 1px solid #f59e0b; }
+    .regime-chop { background: rgba(148, 163, 184, 0.18); color: #cbd5e1; border: 1px solid #64748b; }
+    .agent-stat-pill {
+        background: #111827;
+        border: 1px solid #1f2937;
+        border-radius: 8px;
+        padding: 8px 12px;
+        text-align: center;
     }
     </style>
     """,
@@ -967,6 +1003,136 @@ def render_dashboard(
             """
         )
 
+    # === 🧠 AUTONOMOUS COGNITIVE AGENT BRAIN CONSOLE ===
+    agent_thought = state.get("agent_thought")
+    agent_mem = state.get("agent_memory") or agent_brain.memory.data
+
+    if not agent_thought:
+        try:
+            prev_thought = agent_brain.deliberate(
+                metrics=metrics,
+                predictions=predictions,
+                current_price=current_price,
+                active_position=position,
+                cycle_count=state.get("cycle_count", 0),
+                cfg={
+                    "long_probability": prob_threshold,
+                    "short_probability": prob_threshold,
+                    "min_expected_return": min_return_hurdle,
+                    "take_profit": take_profit_target,
+                    "require_1h_trend": require_1h_trend,
+                },
+            )
+            thought_data = asdict(prev_thought)
+        except Exception:
+            thought_data = {
+                "regime": "CHOPPY_RANGE",
+                "market_thesis": "Deliberating on multi-timeframe order flow...",
+                "risk_evaluation": "Evaluating market volatility and downside buffer...",
+                "reasoning_summary": "Synthesizing signals and waiting for high-conviction alignment.",
+                "learning_notes": "Episodic memory active.",
+                "dynamic_tp_pct": take_profit_target,
+                "dynamic_sl_pct": 0.008,
+            }
+    else:
+        thought_data = agent_thought
+
+    cur_regime = thought_data.get("regime", "CHOPPY_RANGE")
+    regime_class_map = {
+        "BULL_MOMENTUM": ("regime-bull", "🟢 BULL MOMENTUM EXPANSION"),
+        "BEAR_MOMENTUM": ("regime-bear", "🔴 BEAR MOMENTUM EXPANSION"),
+        "HIGH_VOLATILITY": ("regime-vol", "⚡ HIGH VOLATILITY REGIME"),
+        "CHOPPY_RANGE": ("regime-chop", "⚪ SIDEWAYS CONSOLIDATION"),
+        "OVERBOUGHT_STRETCH": ("regime-vol", "⚠️ OVERBOUGHT STRETCH"),
+        "OVERSOLD_BOUNCE": ("regime-bull", "🔄 OVERSOLD BOUNCE ZONE"),
+    }
+    r_class, r_title = regime_class_map.get(cur_regime, ("regime-chop", cur_regime))
+
+    adaptations = agent_mem.get("active_adaptations", {})
+    is_defense = adaptations.get("defense_mode", False)
+    tot_trades = agent_mem.get("total_trades", 0)
+    rolling_wr = agent_mem.get("rolling_win_rate", 0.0)
+    all_wr = agent_mem.get("win_rate", 0.0)
+    r_stats = agent_mem.get("regime_stats", {}).get(cur_regime, {})
+    r_wr = r_stats.get("win_rate", 0.0)
+    r_tr = r_stats.get("trades", 0)
+
+    dyn_tp = thought_data.get("dynamic_tp_pct", take_profit_target)
+    dyn_sl = thought_data.get("dynamic_sl_pct", 0.008)
+
+    defense_badge = (
+        '<span style="background: rgba(239, 68, 68, 0.25); color: #fca5a5; border: 1px solid #ef4444; padding: 3px 10px; border-radius: 12px; font-weight: 700; font-size: 0.76rem;">🛡️ DEFENSE MODE (+3% Hurdle)</span>'
+        if is_defense
+        else '<span style="background: rgba(16, 185, 129, 0.2); color: #6ee7b7; border: 1px solid #10b981; padding: 3px 10px; border-radius: 12px; font-weight: 700; font-size: 0.76rem;">⚡ OPTIMAL EDGE MODE</span>'
+    )
+
+    st.markdown(
+        f"""
+        <div class="agent-brain-card">
+            <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #1e293b; padding-bottom: 10px; margin-bottom: 12px;">
+                <div style="display: flex; align-items: center; gap: 10px;">
+                    <span style="font-size: 1.4rem;">🧠</span>
+                    <div>
+                        <strong style="font-size: 1.05rem; color: #f0f6fc;">Autonomous Cognitive Agent Brain</strong>
+                        <div style="font-size: 0.74rem; color: #94a3b8;">Deliberate Multi-Factor Reasoning &amp; Continuous Episodic Learning</div>
+                    </div>
+                </div>
+                <div style="display: flex; gap: 8px; align-items: center;">
+                    <span class="regime-badge {r_class}">{r_title}</span>
+                    {defense_badge}
+                </div>
+            </div>
+            
+            <div style="display: grid; grid-template-columns: 2fr 1.2fr; gap: 14px;">
+                <div>
+                    <div style="font-size: 0.78rem; text-transform: uppercase; font-weight: 700; color: #38bdf8; margin-bottom: 4px;">
+                        💡 Live Market Thesis &amp; Executive Deliberation
+                    </div>
+                    <div class="agent-thought-stream">
+                        <div style="color: #60a5fa; font-weight: 700; margin-bottom: 6px;">
+                            [THESIS] <span style="color: #cbd5e1; font-weight: 400;">{thought_data.get('market_thesis', '')}</span>
+                        </div>
+                        <div style="color: #fbbf24; font-weight: 700; margin-bottom: 6px;">
+                            [RISK] <span style="color: #cbd5e1; font-weight: 400;">{thought_data.get('risk_evaluation', '')}</span>
+                        </div>
+                        <div style="color: #34d399; font-weight: 700;">
+                            [EXECUTIVE DECISION] <span style="color: #f8fafc; font-weight: 600;">{thought_data.get('reasoning_summary', '')}</span>
+                        </div>
+                    </div>
+                </div>
+                <div>
+                    <div style="font-size: 0.78rem; text-transform: uppercase; font-weight: 700; color: #a855f7; margin-bottom: 4px;">
+                        📚 Episodic Memory &amp; Self-Learning HUD
+                    </div>
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 10px;">
+                        <div class="agent-stat-pill">
+                            <div style="font-size: 0.7rem; color: #94a3b8;">Total Trades Learned</div>
+                            <div style="font-size: 1.15rem; font-weight: 700; color: #f0f6fc;">{tot_trades}</div>
+                            <div style="font-size: 0.68rem; color: #64748b;">Across sessions</div>
+                        </div>
+                        <div class="agent-stat-pill">
+                            <div style="font-size: 0.7rem; color: #94a3b8;">Rolling Win Rate</div>
+                            <div style="font-size: 1.15rem; font-weight: 700; color: {'#4ade80' if rolling_wr >= 50 else '#f87171'};">{rolling_wr:.1f}%</div>
+                            <div style="font-size: 0.68rem; color: #64748b;">Last 10 trades</div>
+                        </div>
+                        <div class="agent-stat-pill">
+                            <div style="font-size: 0.7rem; color: #94a3b8;">Regime Win Rate</div>
+                            <div style="font-size: 1.15rem; font-weight: 700; color: #38bdf8;">{r_wr:.1f}%</div>
+                            <div style="font-size: 0.68rem; color: #64748b;">{r_tr} trades in regime</div>
+                        </div>
+                        <div class="agent-stat-pill">
+                            <div style="font-size: 0.7rem; color: #94a3b8;">Dynamic Brackets</div>
+                            <div style="font-size: 0.85rem; font-weight: 700; color: #f0f6fc;">TP {dyn_tp*100:.1f}% | SL {dyn_sl*100:.1f}%</div>
+                            <div style="font-size: 0.68rem; color: #64748b;">ATR-scaled</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
     # === LIVE AI DECISION ENGINE & 4-STEP CHECKLIST HUD ===
     c1_pass = (rel_long >= prob_threshold) or (rel_short >= prob_threshold) or (p_long >= prob_threshold) or (p_short >= prob_threshold)
     c2_pass = abs(exp_ret) >= min_return_hurdle
@@ -1530,6 +1696,33 @@ def render_dashboard(
         st.dataframe(history_df, use_container_width=True, hide_index=True)
     else:
         st.caption("No closed trades yet in this session.")
+
+    # 🧠 Episodic Reflexions & Lessons Learned
+    reflections = agent_mem.get("reflections", [])
+    with st.expander(f"🧠 **Agent Memory Ledger: Post-Trade Reflexions & Lessons Learned ({len(reflections)} Recorded)**", expanded=False):
+        if reflections:
+            for r in reflections[:12]:
+                r_win = r.get("is_win", False)
+                icon = "🟢 WIN" if r_win else "🔴 STOP"
+                st.markdown(
+                    f"""
+                    <div style="background: #0d1527; border-left: 4px solid {'#22c55e' if r_win else '#ef4444'}; border-radius: 6px; padding: 10px 14px; margin-bottom: 8px;">
+                        <div style="display: flex; justify-content: space-between; font-size: 0.8rem; margin-bottom: 4px;">
+                            <span style="font-weight: 700; color: {'#4ade80' if r_win else '#f87171'};">{icon} &bull; {r.get('side', '')} ({r.get('regime', '')})</span>
+                            <span style="color: #94a3b8;">{r.get('time', '')} &bull; PnL: <b style="color: {'#4ade80' if r_win else '#f87171'};">${float(r.get('pnl', 0.0)):+.2f}</b></span>
+                        </div>
+                        <div style="font-size: 0.84rem; color: #e2e8f0; line-height: 1.5;">
+                            <b>Lesson Learned:</b> {r.get('lesson_learned', '')}
+                        </div>
+                        <div style="font-size: 0.75rem; color: #64748b; margin-top: 3px;">
+                            Entry: ${float(r.get('entry', 0)):,.1f} &bull; Exit: ${float(r.get('exit', 0)):,.1f} &bull; Exit Trigger: {r.get('exit_reason', '')}
+                        </div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+        else:
+            st.caption("No trade reflections recorded in memory yet. Closed trades will automatically generate deep post-mortem lessons here.")
 
 
 # Render main interactive dashboard
