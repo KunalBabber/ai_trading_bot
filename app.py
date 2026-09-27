@@ -9,6 +9,8 @@ import os
 import time
 from datetime import datetime, timezone
 import json
+import urllib.request
+import requests
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
@@ -621,9 +623,17 @@ with st.sidebar:
         def fetch_server_ip():
             for u in ["https://api4.ipify.org", "https://checkip.amazonaws.com", "https://ifconfig.co/ip"]:
                 try:
-                    r = requests.get(u, timeout=2.0)
+                    r = requests.get(u, timeout=2.5, headers={"User-Agent": "curl/7.68.0"})
                     if r.status_code == 200 and r.text.strip():
                         return r.text.strip()
+                except Exception:
+                    pass
+                try:
+                    req = urllib.request.Request(u, headers={"User-Agent": "curl/7.68.0"})
+                    with urllib.request.urlopen(req, timeout=2.5) as resp:
+                        txt = resp.read().decode("utf-8").strip()
+                        if txt:
+                            return txt
                 except Exception:
                     continue
             return "Unable to detect (Click [🔌 Test API] below)"
