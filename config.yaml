@@ -17,14 +17,15 @@ model:
   patience: 7
 
 strategy:
-  long_probability: 0.58
-  short_probability: 0.58
-  min_expected_return: 0.0015
-  stop_loss: 0.008
+  long_probability: 0.52
+  short_probability: 0.52
+  min_expected_return: 0.0010
+  stop_loss: 0.010
   take_profit: 0.016
   risk_per_trade: 0.003
   max_position_fraction: 0.20
   max_daily_loss: 0.02
+  require_1h_trend: false
 
 exchange:
   symbol: "BTCUSD"

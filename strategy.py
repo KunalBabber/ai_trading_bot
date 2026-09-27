@@ -7,6 +7,7 @@ class Signal:
     expected_return: float
     probability: float
     stop_distance: float
+    confidence: float = 0.0  # Directional AI conviction (0.0 to 1.0)
 
 
 def make_signal(
@@ -16,30 +17,52 @@ def make_signal(
     trend_15m: float,
     trend_1h: float,
     atr_pct: float,
-    long_probability=0.58,
-    short_probability=0.58,
-    min_expected_return=0.0015,
+    long_probability=0.52,
+    short_probability=0.52,
+    min_expected_return=0.0010,
+    require_1h_trend=False,
 ):
-    # A simple regime filter:
-    # long requires positive higher-timeframe trend,
-    # short requires negative higher-timeframe trend.
+    """
+    Generate actionable trade signal using calibrated directional AI conviction
+    and trend momentum filters.
+    
+    In multi-task dual-head binary classification, raw sigmoid outputs reflect the 
+    underlying prior label frequency (~39% base rate). Calibrated directional 
+    conviction normalizes long vs short edge:
+        rel_long = p_long / (p_long + p_short)
+        rel_short = p_short / (p_long + p_short)
+    
+    A trigger occurs when directional conviction (or raw probability) exceeds the 
+    threshold, predicted return covers fees + slippage, and higher-timeframe trend aligns.
+    """
+    total_p = p_long + p_short + 1e-12
+    rel_long = p_long / total_p
+    rel_short = p_short / total_p
+    best_conviction = max(rel_long, rel_short)
+
+    long_conviction_ok = (rel_long >= long_probability) or (p_long >= long_probability)
+    short_conviction_ok = (rel_short >= short_probability) or (p_short >= short_probability)
+
+    long_trend_ok = (trend_15m > 0) and (trend_1h > 0 if require_1h_trend else True)
+    short_trend_ok = (trend_15m < 0) and (trend_1h < 0 if require_1h_trend else True)
+
+    stop_dist = max(atr_pct * 1.5, 0.008)
+
     if (
-        p_long >= long_probability
+        long_conviction_ok
         and predicted_return >= min_expected_return
-        and trend_15m > 0
-        and trend_1h > 0
+        and long_trend_ok
     ):
-        return Signal(+1, predicted_return, p_long, max(atr_pct * 1.5, 0.003))
+        return Signal(+1, predicted_return, rel_long, stop_dist, confidence=rel_long)
 
     if (
-        p_short >= short_probability
+        short_conviction_ok
         and predicted_return <= -min_expected_return
-        and trend_15m < 0
-        and trend_1h < 0
+        and short_trend_ok
     ):
-        return Signal(-1, predicted_return, p_short, max(atr_pct * 1.5, 0.003))
+        return Signal(-1, predicted_return, rel_short, stop_dist, confidence=rel_short)
 
-    return Signal(0, predicted_return, max(p_long, p_short), 0.0)
+    return Signal(0, predicted_return, best_conviction, 0.0, confidence=best_conviction)
 
 
 def position_fraction(equity, stop_distance, risk_fraction=0.003,

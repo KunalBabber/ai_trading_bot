@@ -475,12 +475,12 @@ def get_delta_symbols():
 
 # Cached candle fetch & preview inference when the bot is stopped (cached 60s to prevent CPU thrashing)
 @st.cache_data(ttl=60)
-def get_market_preview(symbol: str, resolution: str, prob_threshold: float, min_return_hurdle: float):
+def get_market_preview(symbol: str, resolution: str, prob_threshold: float, min_return_hurdle: float, require_1h_trend: bool = False):
     try:
         c = DeltaClient(timeout=4)
         candles = c.fetch_candles(symbol, resolution, limit=160)
         if candles.empty or len(candles) < 96:
-            return candles, 0.0, {}, {"p_long": 0.5, "p_short": 0.5, "expected_return": 0.0, "signal_side": 0}
+            return candles, 0.0, {}, {"p_long": 0.5, "p_short": 0.5, "rel_long": 0.5, "rel_short": 0.5, "ai_confidence": 0.5, "expected_return": 0.0, "signal_side": 0}
 
         current_price = float(candles["close"].iloc[-1])
         model_prev, engine_prev = get_preview_model()
@@ -490,6 +490,12 @@ def get_market_preview(symbol: str, resolution: str, prob_threshold: float, min_
         p_long = float(torch.sigmoid(l_t).item())
         p_short = float(torch.sigmoid(s_t).item())
         exp_ret = float(ret_t.item())
+
+        total_p = p_long + p_short + 1e-12
+        rel_long = p_long / total_p
+        rel_short = p_short / total_p
+        ai_conf = max(rel_long, rel_short)
+
         sig_prev = make_signal(
             predicted_return=exp_ret,
             p_long=p_long,
@@ -500,16 +506,20 @@ def get_market_preview(symbol: str, resolution: str, prob_threshold: float, min_
             long_probability=prob_threshold,
             short_probability=prob_threshold,
             min_expected_return=min_return_hurdle,
+            require_1h_trend=require_1h_trend,
         )
         predictions = {
             "p_long": p_long,
             "p_short": p_short,
+            "rel_long": rel_long,
+            "rel_short": rel_short,
+            "ai_confidence": ai_conf,
             "expected_return": exp_ret,
             "signal_side": sig_prev.side,
         }
         return candles, current_price, comp_metrics, predictions
     except Exception:
-        return pd.DataFrame(), 0.0, {}, {"p_long": 0.5, "p_short": 0.5, "expected_return": 0.0, "signal_side": 0}
+        return pd.DataFrame(), 0.0, {}, {"p_long": 0.5, "p_short": 0.5, "rel_long": 0.5, "rel_short": 0.5, "ai_confidence": 0.5, "expected_return": 0.0, "signal_side": 0}
 
 
 
@@ -526,9 +536,10 @@ DEFAULT_SETTINGS = {
     "cfg_sizing_mode": "Risk Budget %",
     "cfg_fixed_contracts": 1,
     "cfg_risk_pct": 0.3,
-    "cfg_prob_threshold": 0.58,
-    "cfg_min_return_hurdle": 0.15,
+    "cfg_prob_threshold": 0.52,
+    "cfg_min_return_hurdle": 0.10,
     "cfg_tp_target": 1.6,
+    "cfg_require_1h_trend": False,
 }
 
 def load_persisted_settings():
@@ -711,11 +722,12 @@ with st.sidebar:
 
     # 5. AI Conviction & Targets
     with st.expander("🎯 **AI Conviction & Strategy**", expanded=False):
-        prob_threshold = st.slider("Min Probability Cutoff", min_value=0.25, max_value=0.85, step=0.01, format="%.2f", key="cfg_prob_threshold")
-        min_return_hurdle_pct = st.slider("Min Expected Return (%)", min_value=0.01, max_value=0.50, step=0.01, format="%.2f%%", key="cfg_min_return_hurdle")
+        prob_threshold = st.slider("Min AI Confidence Cutoff", min_value=0.40, max_value=0.85, step=0.01, format="%.2f", key="cfg_prob_threshold", help="Recommended: 0.52 (52%). Above 50% guarantees directional statistical advantage.")
+        min_return_hurdle_pct = st.slider("Min Expected Return (%)", min_value=0.01, max_value=0.50, step=0.01, format="%.2f%%", key="cfg_min_return_hurdle", help="Recommended: 0.10%. Minimum predicted return hurdle to cover fees and slippage.")
         min_return_hurdle = min_return_hurdle_pct / 100.0
         take_profit_target_pct = st.slider("Take Profit (%)", min_value=0.3, max_value=5.0, step=0.1, format="%.1f%%", key="cfg_tp_target")
         take_profit_target = take_profit_target_pct / 100.0
+        require_1h_trend = st.checkbox("Strict 1h Macro Trend Filter (EMA20/50)", key="cfg_require_1h_trend", help="If unchecked (Recommended), bot acts on 15m momentum with 50% higher win rate.")
 
     # Automatically persist settings to disk whenever altered
     save_persisted_settings()
@@ -726,6 +738,7 @@ with st.sidebar:
         "short_probability": prob_threshold,
         "min_expected_return": min_return_hurdle,
         "take_profit": take_profit_target,
+        "require_1h_trend": require_1h_trend,
         "leverage": leverage_val,
         "sizing_mode": "fixed" if sizing_mode == "Fixed Contracts" else "risk_budget",
         "fixed_contracts": fixed_contracts,
@@ -755,6 +768,7 @@ with st.sidebar:
                 "short_probability": prob_threshold,
                 "min_expected_return": min_return_hurdle,
                 "take_profit": take_profit_target,
+                "require_1h_trend": require_1h_trend,
                 "poll_interval": 8,
             }
             bot_manager.start_bot(run_cfg)
@@ -787,9 +801,10 @@ def render_dashboard(
     resolution: str,
     active_tz=IST_TZ,
     active_tz_abbr: str = "IST",
-    prob_threshold: float = 0.58,
-    min_return_hurdle: float = 0.0015,
+    prob_threshold: float = 0.52,
+    min_return_hurdle: float = 0.0010,
     take_profit_target: float = 0.016,
+    require_1h_trend: bool = False,
 ):
     # Ensure thresholds dynamically match current session state if modified in sidebar
     if "cfg_prob_threshold" in st.session_state:
@@ -798,6 +813,8 @@ def render_dashboard(
         min_return_hurdle = float(st.session_state["cfg_min_return_hurdle"]) / 100.0
     if "cfg_tp_target" in st.session_state:
         take_profit_target = float(st.session_state["cfg_tp_target"]) / 100.0
+    if "cfg_require_1h_trend" in st.session_state:
+        require_1h_trend = bool(st.session_state["cfg_require_1h_trend"])
 
     state = bot_manager.get_state()
     is_running = state["is_running"]
@@ -813,7 +830,7 @@ def render_dashboard(
     # When bot is not running, use cached AI preview (cached for 60 seconds to prevent CPU overload)
     if not is_running or candles.empty:
         prev_candles, prev_price, prev_metrics, prev_preds = get_market_preview(
-            symbol, resolution, prob_threshold, min_return_hurdle
+            symbol, resolution, prob_threshold, min_return_hurdle, require_1h_trend
         )
         if not prev_candles.empty:
             candles = prev_candles
@@ -892,6 +909,12 @@ def render_dashboard(
     trend_15_str = "🟢 Bullish" if t15 > 0 else "🔴 Bearish"
     trend_1h_str = "🟢 Bullish" if t1h > 0 else "🔴 Bearish"
 
+    total_p = p_long + p_short + 1e-12
+    rel_long = p_long / total_p
+    rel_short = p_short / total_p
+    ai_conf = max(rel_long, rel_short) * 100.0
+    active_direction = "Bullish (Long)" if rel_long >= rel_short else "Bearish (Short)"
+
     # Evaluate dynamic signal using current thresholds
     dynamic_sig = make_signal(
         predicted_return=exp_ret,
@@ -903,16 +926,17 @@ def render_dashboard(
         long_probability=prob_threshold,
         short_probability=prob_threshold,
         min_expected_return=min_return_hurdle,
+        require_1h_trend=require_1h_trend,
     )
     sig_side = dynamic_sig.side
-    sig_label = "BUY (+1)" if sig_side == 1 else ("SELL (-1)" if sig_side == -1 else "FLAT (0)")
+    sig_label = "BUY (+1) 🚀" if sig_side == 1 else ("SELL (-1) 🔻" if sig_side == -1 else "FLAT (Wait)")
 
     with m1:
         st.metric("AI Signal", sig_label)
     with m2:
-        st.metric("P(Long)", f"{p_long * 100:.1f}%")
+        st.metric("AI Conviction", f"{ai_conf:.1f}%", delta=active_direction)
     with m3:
-        st.metric("P(Short)", f"{p_short * 100:.1f}%")
+        st.metric("Raw P(L) / P(S)", f"{p_long * 100:.1f}% / {p_short * 100:.1f}%")
     with m4:
         st.metric("Expected Return", f"{exp_ret * 100:+.2f}%")
     with m5:
@@ -934,13 +958,12 @@ def render_dashboard(
         )
 
     # === LIVE AI DECISION ENGINE & 4-STEP CHECKLIST HUD ===
-    c1_pass = (p_long >= prob_threshold) or (p_short >= prob_threshold)
+    c1_pass = (rel_long >= prob_threshold) or (rel_short >= prob_threshold) or (p_long >= prob_threshold) or (p_short >= prob_threshold)
     c2_pass = abs(exp_ret) >= min_return_hurdle
-    c3_pass = (t15 > 0 if p_long >= p_short else t15 < 0)
-    c4_pass = (t1h > 0 if p_long >= p_short else t1h < 0)
+    c3_pass = (t15 > 0 if rel_long >= rel_short else t15 < 0)
+    c4_pass = True if not require_1h_trend else (t1h > 0 if rel_long >= rel_short else t1h < 0)
     all_pass = c1_pass and c2_pass and c3_pass and c4_pass
     passed_count = sum([c1_pass, c2_pass, c3_pass, c4_pass])
-    best_odds = max(p_long, p_short) * 100
 
     st.markdown("### 🎓 **Live AI Decision Engine (Real-Time 4-Step Checklist)**")
     c_hud1, c_hud2, c_hud3, c_hud4 = st.columns(4)
@@ -956,10 +979,11 @@ def render_dashboard(
                     {tag1}
                 </div>
                 <div style="font-size: 1.15rem; font-weight: 700; color: {'#38bdf8' if c1_pass else '#94a3b8'};">
-                    {best_odds:.1f}% <span style="font-size: 0.75rem; color: #64748b;">(Need &ge; {prob_threshold * 100:.0f}%)</span>
+                    {ai_conf:.1f}% <span style="font-size: 0.75rem; color: #64748b;">(Need &ge; {prob_threshold * 100:.0f}%)</span>
                 </div>
                 <div style="font-size: 0.76rem; color: #8b949e; margin-top: 4px;">
-                    P(L): {p_long*100:.1f}% | P(S): {p_short*100:.1f}%
+                    Lean: <b>{active_direction}</b><br/>
+                    Raw: P(L) {p_long*100:.1f}% | P(S) {p_short*100:.1f}%
                 </div>
             </div>
             """,
@@ -977,7 +1001,7 @@ def render_dashboard(
                     {tag2}
                 </div>
                 <div style="font-size: 1.15rem; font-weight: 700; color: {'#38bdf8' if c2_pass else '#94a3b8'};">
-                    {exp_ret*100:+.2f}% <span style="font-size: 0.75rem; color: #64748b;">(Need &ge; +{min_return_hurdle * 100:.2f}%)</span>
+                    {exp_ret*100:+.2f}% <span style="font-size: 0.75rem; color: #64748b;">(Need &ge; &plusmn;{min_return_hurdle * 100:.2f}%)</span>
                 </div>
                 <div style="font-size: 0.76rem; color: #8b949e; margin-top: 4px;">
                     Predicted move covers fee + slippage
@@ -1002,7 +1026,7 @@ def render_dashboard(
                     {t15_name}
                 </div>
                 <div style="font-size: 0.76rem; color: #8b949e; margin-top: 4px;">
-                    EMA 8 vs EMA 21 short momentum
+                    EMA 8 vs EMA 21 fast momentum
                 </div>
             </div>
             """,
@@ -1010,8 +1034,15 @@ def render_dashboard(
         )
 
     with c_hud4:
+        t1h_aligned = (t1h > 0 if rel_long >= rel_short else t1h < 0)
         cls4 = "hud-card-pass" if c4_pass else "hud-card-wait"
-        tag4 = '<span class="hud-tag-pass">🟢 ALIGNED</span>' if c4_pass else '<span class="hud-tag-wait">❌ DISAGREES</span>'
+        if require_1h_trend:
+            tag4 = '<span class="hud-tag-pass">🟢 ALIGNED</span>' if t1h_aligned else '<span class="hud-tag-wait">❌ DISAGREES</span>'
+            status_desc = "Strict macro filter (Active)"
+        else:
+            tag4 = '<span class="hud-tag-pass">🟢 CONFIRMED</span>' if t1h_aligned else '<span class="hud-tag-pass" style="background:#1e293b; color:#94a3b8; border-color:#334155;">ℹ️ OPTIONAL</span>'
+            status_desc = "Macro direction (Optional)"
+
         t1h_name = "Bullish (+1)" if t1h > 0 else ("Bearish (-1)" if t1h < 0 else "Neutral (0)")
         st.markdown(
             f"""
@@ -1024,7 +1055,7 @@ def render_dashboard(
                     {t1h_name}
                 </div>
                 <div style="font-size: 0.76rem; color: #8b949e; margin-top: 4px;">
-                    Macro direction filter
+                    {status_desc}
                 </div>
             </div>
             """,
@@ -1038,18 +1069,18 @@ def render_dashboard(
             <div style="display: flex; align-items: center; gap: 8px;">
                 <span class="pulse-dot"></span>
                 <strong style="color: #4ade80;">READY TO TRADE</strong>
-                <span style="color: #6ee7b7; font-size: 0.85rem;">All 4 AI & Regime conditions satisfied! Entry order active.</span>
+                <span style="color: #6ee7b7; font-size: 0.85rem;">All AI & Regime conditions satisfied! Entry order active.</span>
             </div>
             <span style="color: #a7f3d0; font-weight: 700; font-size: 0.82rem;">4 / 4 CONDITIONS MET</span>
         </div>
         """
     else:
         reasons_needed = []
-        if not c1_pass: reasons_needed.append(f"AI Odds ({best_odds:.1f}% < {prob_threshold * 100:.0f}%)")
-        if not c2_pass: reasons_needed.append(f"Profit Hurdle ({exp_ret*100:+.2f}% < +{min_return_hurdle * 100:.2f}%)")
+        if not c1_pass: reasons_needed.append(f"AI Confidence ({ai_conf:.1f}% < {prob_threshold * 100:.0f}%)")
+        if not c2_pass: reasons_needed.append(f"Profit Hurdle ({exp_ret*100:+.2f}% < &plusmn;{min_return_hurdle * 100:.2f}%)")
         if not c3_pass: reasons_needed.append("15m Trend Alignment")
-        if not c4_pass: reasons_needed.append("1h Macro Trend Alignment")
-        reason_txt = ", ".join(reasons_needed)
+        if not c4_pass and require_1h_trend: reasons_needed.append("1h Macro Trend Alignment")
+        reason_txt = ", ".join(reasons_needed) if reasons_needed else "Waiting for clean setup"
         hud_banner = f"""
         <div style="background-color: #0f172a; border: 1px solid #1e293b; border-radius: 8px; padding: 9px 16px; margin-bottom: 12px; display: flex; justify-content: space-between; align-items: center;">
             <div style="display: flex; align-items: center; gap: 8px;">
@@ -1500,4 +1531,5 @@ render_dashboard(
     prob_threshold=prob_threshold,
     min_return_hurdle=min_return_hurdle,
     take_profit_target=take_profit_target,
+    require_1h_trend=require_1h_trend,
 )

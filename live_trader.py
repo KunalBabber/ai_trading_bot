@@ -310,6 +310,7 @@ class DeltaAITrader:
             self.cfg["strategy"]["long_probability"],
             self.cfg["strategy"]["short_probability"],
             self.cfg["strategy"]["min_expected_return"],
+            require_1h_trend=self.cfg["strategy"].get("require_1h_trend", False),
         )
 
         # Clean dashboard display with system local time (IST)

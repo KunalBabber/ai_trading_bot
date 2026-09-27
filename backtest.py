@@ -69,63 +69,103 @@ def main():
 
     fee = cfg["data"]["fee_rate"]
     slippage = cfg["data"]["slippage_rate"]
+    tp_pct = cfg["strategy"].get("take_profit", 0.016)
+    sl_pct = cfg["strategy"].get("stop_loss", 0.010)
 
     model.eval()
 
-    for i in range(seq_len - 1, len(test) - cfg["data"]["horizon_bars"]):
-        x = torch.tensor(
-            scaled[i-seq_len+1:i+1][None, ...],
-            dtype=torch.float32
-        )
+    pos_side = 0
+    pos_entry = 0.0
+    pos_tp = 0.0
+    pos_sl = 0.0
+    pos_frac = 0.0
 
-        with torch.no_grad():
-            pred_ret, long_logit, short_logit = model(x)
-
-        pred_ret = float(pred_ret.item())
-        p_long = sigmoid(float(long_logit.item()))
-        p_short = sigmoid(float(short_logit.item()))
-
+    for i in range(seq_len - 1, len(test)):
         row = test.iloc[i]
-        signal = make_signal(
-            pred_ret,
-            p_long,
-            p_short,
-            row["trend_15m"],
-            row["trend_1h"],
-            row["atr_pct"],
-            cfg["strategy"]["long_probability"],
-            cfg["strategy"]["short_probability"],
-            cfg["strategy"]["min_expected_return"],
-        )
+        curr_price = row["close"]
+        high_price = row["high"]
+        low_price = row["low"]
 
-        if signal.side == 0:
-            returns.append(0.0)
-            continue
+        # Check exits first
+        if pos_side == 1:
+            if high_price >= pos_tp:
+                exit_price = pos_tp
+                cost = 2 * (fee + slippage)
+                trade_return = pos_frac * ((exit_price / pos_entry - 1.0) - cost)
+                equity *= max(0.0, 1.0 + trade_return)
+                returns.append(trade_return)
+                trades += 1
+                wins += 1
+                pos_side = 0
+            elif low_price <= pos_sl:
+                exit_price = pos_sl
+                cost = 2 * (fee + slippage)
+                trade_return = pos_frac * ((exit_price / pos_entry - 1.0) - cost)
+                equity *= max(0.0, 1.0 + trade_return)
+                returns.append(trade_return)
+                trades += 1
+                pos_side = 0
+        elif pos_side == -1:
+            if low_price <= pos_tp:
+                exit_price = pos_tp
+                cost = 2 * (fee + slippage)
+                trade_return = pos_frac * ((pos_entry / exit_price - 1.0) - cost)
+                equity *= max(0.0, 1.0 + trade_return)
+                returns.append(trade_return)
+                trades += 1
+                wins += 1
+                pos_side = 0
+            elif high_price >= pos_sl:
+                exit_price = pos_sl
+                cost = 2 * (fee + slippage)
+                trade_return = pos_frac * ((pos_entry / exit_price - 1.0) - cost)
+                equity *= max(0.0, 1.0 + trade_return)
+                returns.append(trade_return)
+                trades += 1
+                pos_side = 0
 
-        equity_before = equity
-        frac = position_fraction(
-            equity,
-            signal.stop_distance,
-            cfg["strategy"]["risk_per_trade"],
-            cfg["strategy"]["max_position_fraction"],
-        )
+        # If flat, evaluate entry signal
+        if pos_side == 0:
+            x = torch.tensor(
+                scaled[i-seq_len+1:i+1][None, ...],
+                dtype=torch.float32
+            )
 
-        future_close = test.iloc[
-            i + cfg["data"]["horizon_bars"]
-        ]["close"]
-        entry = row["close"]
-        raw_move = signal.side * (future_close / entry - 1.0)
+            with torch.no_grad():
+                pred_ret, long_logit, short_logit = model(x)
 
-        # Cost-aware realized return.
-        cost = 2 * (fee + slippage)
-        trade_return = frac * (raw_move - cost)
+            pred_ret = float(pred_ret.item())
+            p_long = sigmoid(float(long_logit.item()))
+            p_short = sigmoid(float(short_logit.item()))
 
-        equity *= max(0.0, 1.0 + trade_return)
-        returns.append(trade_return)
+            signal = make_signal(
+                pred_ret,
+                p_long,
+                p_short,
+                row["trend_15m"],
+                row["trend_1h"],
+                row["atr_pct"],
+                cfg["strategy"]["long_probability"],
+                cfg["strategy"]["short_probability"],
+                cfg["strategy"]["min_expected_return"],
+                require_1h_trend=cfg["strategy"].get("require_1h_trend", False),
+            )
 
-        trades += 1
-        if trade_return > 0:
-            wins += 1
+            if signal.side != 0:
+                pos_side = signal.side
+                pos_entry = curr_price
+                pos_frac = position_fraction(
+                    equity,
+                    signal.stop_distance,
+                    cfg["strategy"]["risk_per_trade"],
+                    cfg["strategy"]["max_position_fraction"],
+                )
+                if pos_side == 1:
+                    pos_tp = curr_price * (1.0 + tp_pct)
+                    pos_sl = curr_price * (1.0 - sl_pct)
+                else:
+                    pos_tp = curr_price * (1.0 - tp_pct)
+                    pos_sl = curr_price * (1.0 + sl_pct)
 
         peak = max(peak, equity)
         dd = equity / peak - 1.0

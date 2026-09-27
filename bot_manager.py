@@ -537,10 +537,11 @@ class TradingBotManager:
             try:
                 # Dynamic strategy parameters from live_config
                 with self.state_lock:
-                    long_prob_threshold = self.live_config.get("long_probability", 0.58)
-                    short_prob_threshold = self.live_config.get("short_probability", 0.58)
-                    min_expected_return = self.live_config.get("min_expected_return", 0.0015)
+                    long_prob_threshold = self.live_config.get("long_probability", 0.52)
+                    short_prob_threshold = self.live_config.get("short_probability", 0.52)
+                    min_expected_return = self.live_config.get("min_expected_return", 0.0010)
                     take_profit_target = self.live_config.get("take_profit", 0.016)
+                    require_1h_trend = self.live_config.get("require_1h_trend", False)
                     sizing_mode = self.live_config.get("sizing_mode", "risk_budget")
                     fixed_contracts = self.live_config.get("fixed_contracts", 1)
                     risk_per_trade = self.live_config.get("risk_per_trade", 0.003)
@@ -565,6 +566,11 @@ class TradingBotManager:
                 p_long = float(torch.sigmoid(long_logit).item())
                 p_short = float(torch.sigmoid(short_logit).item())
 
+                total_p = p_long + p_short + 1e-12
+                rel_long = p_long / total_p
+                rel_short = p_short / total_p
+                best_conviction = max(rel_long, rel_short)
+
                 # 4. Generate Signal
                 signal = make_signal(
                     expected_return,
@@ -576,6 +582,7 @@ class TradingBotManager:
                     long_prob_threshold,
                     short_prob_threshold,
                     min_expected_return,
+                    require_1h_trend=require_1h_trend,
                 )
 
                 # 5. Check Active Position & PnL
@@ -586,6 +593,9 @@ class TradingBotManager:
                     self.predictions = {
                         "p_long": p_long,
                         "p_short": p_short,
+                        "rel_long": rel_long,
+                        "rel_short": rel_short,
+                        "ai_confidence": best_conviction,
                         "expected_return": expected_return,
                         "signal_side": signal.side,
                     }
@@ -654,10 +664,11 @@ class TradingBotManager:
                 # Real-time Terminal Log Every Scan Cycle
                 sig_desc = "BUY (+1) 🚀" if signal.side == 1 else ("SELL (-1) 🔻" if signal.side == -1 else "FLAT (Wait)")
                 pos_desc = f"LONG ({pos['size']}x @ ${pos['entry_price']:,.1f})" if pos["side"] == 1 else (f"SHORT ({pos['size']}x @ ${pos['entry_price']:,.1f})" if pos["side"] == -1 else "FLAT")
+                lean_tag = f"BULL ({rel_long*100:.1f}%)" if rel_long >= rel_short else f"BEAR ({rel_short*100:.1f}%)"
 
                 self.log(
                     f"SCAN #{self.cycle_count:03d} • {self.symbol}: ${current_price:,.2f} | "
-                    f"P(L): {p_long*100:.1f}% | P(S): {p_short*100:.1f}% | E(R): {expected_return*100:+.2f}% | "
+                    f"AI Conviction: {best_conviction*100:.1f}% [{lean_tag}] | E(R): {expected_return*100:+.2f}% | "
                     f"Signal: {sig_desc} | Pos: {pos_desc}"
                 )
 
@@ -671,15 +682,17 @@ class TradingBotManager:
                 if is_new_bar or is_flat_entry:
                     if signal.side == 0 and pos["side"] == 0 and is_new_bar:
                         reasons = []
-                        if p_long < long_prob_threshold and p_short < short_prob_threshold:
-                            reasons.append(f"AI Odds ({max(p_long, p_short)*100:.1f}%) < {long_prob_threshold*100:.0f}%")
+                        c_long = (rel_long >= long_prob_threshold) or (p_long >= long_prob_threshold)
+                        c_short = (rel_short >= short_prob_threshold) or (p_short >= short_prob_threshold)
+                        if not c_long and not c_short:
+                            reasons.append(f"AI Conviction ({best_conviction*100:.1f}%) < {long_prob_threshold*100:.0f}%")
                         if abs(expected_return) < min_expected_return:
-                            reasons.append("Profit hurdle not met")
-                        if (metrics.get("trend_15m", 0) <= 0 and p_long >= long_prob_threshold) or (metrics.get("trend_15m", 0) >= 0 and p_short >= short_prob_threshold):
+                            reasons.append(f"Expected move ({abs(expected_return)*100:.2f}%) < Hurdle ({min_expected_return*100:.2f}%)")
+                        if (metrics.get("trend_15m", 0) <= 0 and rel_long >= rel_short) or (metrics.get("trend_15m", 0) >= 0 and rel_short > rel_long):
                             reasons.append("15m Trend not aligned")
-                        if (metrics.get("trend_1h", 0) <= 0 and p_long >= long_prob_threshold) or (metrics.get("trend_1h", 0) >= 0 and p_short >= short_prob_threshold):
+                        if require_1h_trend and ((metrics.get("trend_1h", 0) <= 0 and rel_long >= rel_short) or (metrics.get("trend_1h", 0) >= 0 and rel_short > rel_long)):
                             reasons.append("1h Macro Trend not aligned")
-                        reason_str = ", ".join(reasons) if reasons else "Waiting for high-conviction setup"
+                        reason_str = ", ".join(reasons) if reasons else "Standing by for high-conviction setup"
                         self.log(f"   ↳ [Bar Close] Standing by: {reason_str}")
 
                     self._check_and_handle_entries(
