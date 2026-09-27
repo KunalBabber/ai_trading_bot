@@ -708,23 +708,11 @@ class TradingBotManager:
 
                 # 7. Check Entries: on candle bar close OR immediately when FLAT with confirmed signal
                 is_new_bar = (last_bar_time is None) or (bar_time > last_bar_time)
-                is_flat_entry = (pos["side"] == 0 and signal.side != 0)
+                is_flat_entry = (pos["side"] == 0 and (thought.action != 0 or signal.side != 0))
 
                 if is_new_bar or is_flat_entry:
-                    if signal.side == 0 and pos["side"] == 0 and is_new_bar:
-                        reasons = []
-                        c_long = (rel_long >= long_prob_threshold) or (p_long >= long_prob_threshold)
-                        c_short = (rel_short >= short_prob_threshold) or (p_short >= short_prob_threshold)
-                        if not c_long and not c_short:
-                            reasons.append(f"AI Conviction ({best_conviction*100:.1f}%) < {long_prob_threshold*100:.0f}%")
-                        if abs(expected_return) < min_expected_return:
-                            reasons.append(f"Expected move ({abs(expected_return)*100:.2f}%) < Hurdle ({min_expected_return*100:.2f}%)")
-                        if (metrics.get("trend_15m", 0) <= 0 and rel_long >= rel_short) or (metrics.get("trend_15m", 0) >= 0 and rel_short > rel_long):
-                            reasons.append("15m Trend not aligned")
-                        if require_1h_trend and ((metrics.get("trend_1h", 0) <= 0 and rel_long >= rel_short) or (metrics.get("trend_1h", 0) >= 0 and rel_short > rel_long)):
-                            reasons.append("1h Macro Trend not aligned")
-                        reason_str = ", ".join(reasons) if reasons else "Standing by for high-conviction setup"
-                        self.log(f"   ↳ [Bar Close] Standing by: {reason_str}")
+                    if thought.action == 0 and pos["side"] == 0 and is_new_bar:
+                        self.log(f"   ↳ [Bar Close] Brain Deliberation: {thought.reasoning_summary}")
 
                     self._check_and_handle_entries(
                         signal=signal,
@@ -868,19 +856,20 @@ class TradingBotManager:
         take_profit_target: float,
         thought: Optional[Any] = None,
     ):
-        """Opens position if a trade signal is confirmed."""
-        if signal.side == 0:
+        """Opens position when Autonomous Agent Brain or signal confirms trade."""
+        effective_side = thought.action if (thought and thought.action != 0) else signal.side
+        if effective_side == 0:
             return
 
         with self.state_lock:
             pos = dict(self.active_position)
 
         # If already holding a position in the same direction, do not duplicate/pyramid
-        if pos["side"] == signal.side:
+        if pos["side"] == effective_side:
             return
 
         # Handle reversal
-        if pos["side"] != 0 and pos["side"] != signal.side:
+        if pos["side"] != 0 and pos["side"] != effective_side:
             self.log("[REVERSAL] Closing existing position to enter opposite signal.")
             if not self.client.dry_run:
                 self.client.close_position(product_id)
@@ -904,7 +893,7 @@ class TradingBotManager:
             notional = equity * pos_frac * self.leverage
             contracts = max(1, int(notional / (current_price * contract_val)))
 
-        side_str = "buy" if signal.side == +1 else "sell"
+        side_str = "buy" if effective_side == +1 else "sell"
         # Dynamic brackets adapted by Agent Brain
         if thought is not None:
             stop_dist = thought.dynamic_sl_pct
@@ -915,14 +904,14 @@ class TradingBotManager:
             tp_target = take_profit_target
             regime_tag = "CHOPPY_RANGE"
 
-        if signal.side == +1:
+        if effective_side == +1:
             sl_price = round(current_price * (1.0 - stop_dist), 1)
             tp_price = round(current_price * (1.0 + tp_target), 1)
         else:
             sl_price = round(current_price * (1.0 + stop_dist), 1)
             tp_price = round(current_price * (1.0 - tp_target), 1)
 
-        self.log(f"[ORDER] Executing {side_str.upper()} {contracts} contracts @ {current_price:.1f} (SL: {sl_price}, TP: {tp_price}) [Regime: {regime_tag}]")
+        self.log(f"[AUTONOMOUS ORDER] Brain executing {side_str.upper()} {contracts} contracts @ {current_price:.1f} (SL: {sl_price}, TP: {tp_price}) [Regime: {regime_tag}]")
 
         order_res = self.client.place_order(
             product_id=product_id,
@@ -936,7 +925,7 @@ class TradingBotManager:
         if order_res.get("success", False):
             with self.state_lock:
                 self.active_position = {
-                    "side": signal.side,
+                    "side": effective_side,
                     "size": contracts,
                     "entry_price": current_price,
                     "stop_loss": sl_price,

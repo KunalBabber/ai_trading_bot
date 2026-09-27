@@ -32,8 +32,8 @@ class AgentThought:
     market_thesis: str
     risk_evaluation: str
     learning_notes: str
-    conditions_met: int
-    total_conditions: int
+    cognitive_score: float = 50.0
+    setup_type: str = "Autonomous Synthesis"
 
 
 class AgentMemory:
@@ -202,17 +202,12 @@ class CognitiveAgentBrain:
         cfg: Optional[Dict[str, Any]] = None,
     ) -> AgentThought:
         """
-        Executes a complete cognitive reasoning cycle:
-        1. Analyzes market regime & indicators
-        2. Inquires episodic memory & active adaptations
-        3. Formulates a deliberate trade hypothesis
-        4. Makes an executive decision (BUY, SELL, FLAT) with dynamic SL/TP
+        Executes a complete cognitive reasoning cycle using an Autonomous Multi-Factor Matrix.
+        Instead of rigid binary rules, the agent holistically evaluates directional neural alpha,
+        order flow velocity, discount/premium exhaustion, and regime payoff asymmetry.
         """
         cfg = cfg or {}
-        base_threshold = float(cfg.get("long_probability", 0.52))
-        min_return_hurdle = float(cfg.get("min_expected_return", 0.0010))
-        base_tp = float(cfg.get("take_profit", 0.016))
-        require_1h_trend = bool(cfg.get("require_1h_trend", False))
+        temperament = cfg.get("temperament", "Autonomous Cognitive")
 
         p_long = float(predictions.get("p_long", 0.5))
         p_short = float(predictions.get("p_short", 0.5))
@@ -221,118 +216,170 @@ class CognitiveAgentBrain:
         total_p = p_long + p_short + 1e-12
         rel_long = p_long / total_p
         rel_short = p_short / total_p
-        best_conviction = max(rel_long, rel_short)
         active_direction = "BULLISH (Long)" if rel_long >= rel_short else "BEARISH (Short)"
+        best_conviction = max(rel_long, rel_short)
 
-        # 1. Market Regime
+        # 1. Market Regime Classification
         regime = self.classify_market_regime(metrics)
 
-        # 2. Episodic Memory Adaptations
+        # 2. Episodic Memory & Learned Adaptations
         adaptations = self.memory.data.get("active_adaptations", {})
         defense_mode = adaptations.get("defense_mode", False)
-        conviction_bias = adaptations.get("conviction_bias", 0.0)
         sl_multiplier = adaptations.get("sl_buffer_multiplier", 1.0)
         tp_multiplier = adaptations.get("tp_target_multiplier", 1.0)
 
-        # Adjusted threshold from learning
-        effective_threshold = base_threshold + conviction_bias
-        effective_tp = base_tp * tp_multiplier
         atr_pct = metrics.get("atr_pct", 0.005)
-        effective_sl = max(atr_pct * 1.5 * sl_multiplier, 0.008 * sl_multiplier)
-
-        # 3. Multi-Factor Evaluation
         t15 = metrics.get("trend_15m", 0.0)
         t1h = metrics.get("trend_1h", 0.0)
         rsi = metrics.get("rsi_14", 0.50)
 
-        c1_conviction_ok = (rel_long >= effective_threshold) or (rel_short >= effective_threshold)
-        c2_return_ok = abs(exp_ret) >= min_return_hurdle
-        c3_trend_ok = (t15 > 0 if rel_long >= rel_short else t15 < 0)
-        c4_macro_ok = True if not require_1h_trend else (t1h > 0 if rel_long >= rel_short else t1h < 0)
+        # Dynamic brackets: tailored to regime and volatility
+        effective_sl = max(atr_pct * 1.5 * sl_multiplier, 0.008 * sl_multiplier)
+        effective_tp = max(atr_pct * 2.2 * tp_multiplier, 0.016 * tp_multiplier)
 
-        conditions_met = sum([c1_conviction_ok, c2_return_ok, c3_trend_ok, c4_macro_ok])
+        # 3. Autonomous Cognitive Scoring Matrix (0 to 100)
+        bullish_score = 0.0
+        bearish_score = 0.0
+        setup_type = "Consolidation Scan"
 
-        # 4. Executive Decision
+        # A. Neural Alpha Component (0 to 50 points)
+        bullish_score += rel_long * 50.0
+        bearish_score += rel_short * 50.0
+
+        # B. Expected Return Quality (0 to 20 points)
+        if exp_ret > 0:
+            bullish_score += min(20.0, 10.0 + (exp_ret * 200.0))
+            bearish_score -= 8.0
+        elif exp_ret < 0:
+            bearish_score += min(20.0, 10.0 + (abs(exp_ret) * 200.0))
+            bullish_score -= 8.0
+
+        # C. Order Flow, Pullback & Discount Context (0 to 20 points)
+        if rel_long >= rel_short:
+            # Bullish context
+            if t15 > 0:
+                bullish_score += 15.0
+                setup_type = "Bullish Momentum Expansion"
+            elif rsi <= 0.46:
+                # Intelligent pullback / discount accumulation
+                bullish_score += 14.0
+                setup_type = "Dip Accumulation at RSI Discount"
+            else:
+                bullish_score += 4.0
+                setup_type = "Consolidation Drift"
+
+            if t1h > 0:
+                bullish_score += 8.0
+            elif t1h < -0.002:
+                bullish_score -= 5.0
+        else:
+            # Bearish context
+            if t15 < 0:
+                bearish_score += 15.0
+                setup_type = "Bearish Momentum Breakdown"
+            elif rsi >= 0.54:
+                # Intelligent rally / premium shorting
+                bearish_score += 14.0
+                setup_type = "Premium Shorting at RSI Exhaustion"
+            else:
+                bearish_score += 4.0
+                setup_type = "Consolidation Drift"
+
+            if t1h < 0:
+                bearish_score += 8.0
+            elif t1h > 0.002:
+                bearish_score -= 5.0
+
+        # D. Regime Synergy (0 to 10 points)
+        if regime == "BULL_MOMENTUM":
+            bullish_score += 10.0
+            bearish_score -= 5.0
+        elif regime == "BEAR_MOMENTUM":
+            bearish_score += 10.0
+            bullish_score -= 5.0
+        elif regime == "OVERSOLD_BOUNCE":
+            bullish_score += 12.0
+            setup_type = "Oversold Mean-Reversion Bounce"
+        elif regime == "OVERBOUGHT_STRETCH":
+            bearish_score += 12.0
+            setup_type = "Overbought Mean-Reversion Short"
+
+        # E. Episodic Memory Feedback
+        regime_stats = self.memory.data.get("regime_stats", {}).get(regime, {})
+        regime_winrate = regime_stats.get("win_rate", 50.0)
+        regime_trades = regime_stats.get("trades", 0)
+        if regime_trades >= 2:
+            if regime_winrate >= 60.0:
+                bullish_score += 4.0 if rel_long >= rel_short else 0.0
+                bearish_score += 4.0 if rel_short > rel_long else 0.0
+            elif regime_winrate <= 35.0:
+                bullish_score -= 5.0
+                bearish_score -= 5.0
+
+        # 4. Decision Hurdle based on Agent Temperament & Learning
+        if temperament == "Aggressive Edge Hunter":
+            hurdle = 48.0
+        elif temperament == "Defensive Capital Preserver":
+            hurdle = 56.0
+        else:
+            hurdle = 50.5  # Balanced autonomous
+
+        if defense_mode:
+            hurdle += 3.5
+
+        top_score = max(bullish_score, bearish_score)
+
+        # 5. Executive Action
         action = 0
-        action_label = "FLAT (Standby)"
+        action_label = "STANDBY (Preserving Capital)"
 
-        if conditions_met == 4:
-            if rel_long > rel_short and exp_ret > 0 and t15 > 0:
-                action = +1
-                action_label = "BUY (+1) 🚀"
-            elif rel_short > rel_long and exp_ret < 0 and t15 < 0:
-                action = -1
-                action_label = "SELL (-1) 🔻"
+        if bullish_score > bearish_score and bullish_score >= hurdle:
+            action = +1
+            action_label = "AUTONOMOUS BUY 🚀"
+        elif bearish_score > bullish_score and bearish_score >= hurdle:
+            action = -1
+            action_label = "AUTONOMOUS SELL 🔻"
 
-        # 5. Cognitive Narrative Synthesis
-        # Market Thesis
-        thesis_parts = []
-        regime_desc = {
-            "BULL_MOMENTUM": "Market is in an active Bull Momentum Expansion with constructive higher-timeframe flows.",
-            "BEAR_MOMENTUM": "Market is in an active Bear Momentum Expansion with heavy selling pressure.",
-            "HIGH_VOLATILITY": "Market is experiencing High Volatility; wider ATR swings require defensive risk control.",
-            "CHOPPY_RANGE": "Market is in a Sideways Consolidation Range; price is searching for directional volume.",
-            "OVERBOUGHT_STRETCH": "Market is technically Overbought on RSI; upside may encounter near-term resistance.",
-            "OVERSOLD_BOUNCE": "Market is technically Oversold on RSI; potential mean-reversion bounce zone.",
-        }.get(regime, "Consolidation phase.")
-
-        thesis_parts.append(f"Regime: {regime_desc}")
-        thesis_parts.append(
-            f"Neural Analysis: GRU predicts {best_conviction*100:.1f}% conviction for {active_direction} "
-            f"with expected return of {exp_ret*100:+.2f}%."
-        )
-        if t15 != 0:
-            trend_dir = "Bullish" if t15 > 0 else "Bearish"
-            thesis_parts.append(f"15m Trend: {trend_dir} (velocity: {t15*100:+.2f}%).")
-
+        # 6. Natural Language Synthesis
+        thesis_parts = [
+            f"Regime: {regime}. Setup: {setup_type}.",
+            f"Neural Analysis: {best_conviction*100:.1f}% conviction for {active_direction} (Expected Return: {exp_ret*100:+.2f}%).",
+            f"Momentum & RSI: 15m trend velocity {t15*100:+.2f}%, RSI at {rsi*100:.1f}%.",
+        ]
         market_thesis = " ".join(thesis_parts)
 
-        # Risk Evaluation
         risk_parts = []
         if defense_mode:
-            risk_parts.append("🛡️ Defensive Mode Active: Higher conviction required due to recent adverse market chop.")
+            risk_parts.append("🛡️ Defense Mode Active (+3.5pt hurdle & wider stops) due to recent market turbulence.")
         else:
-            risk_parts.append("Optimal Risk Posture: Standard capital allocation with 1:1.6 risk/reward.")
-
-        if rsi > 0.70 or rsi < 0.30:
-            risk_parts.append(f"RSI extreme ({rsi*100:.1f}%): Monitor for rapid momentum exhaustion.")
-        else:
-            risk_parts.append(f"RSI balanced ({rsi*100:.1f}%): Sustainable continuation environment.")
-
+            risk_parts.append(f"Autonomous Cognitive Posture: Risk-Reward 1:{effective_tp/effective_sl:.1f}.")
+        risk_parts.append(f"Dynamic Protective Stop: {effective_sl*100:.1f}% | Dynamic Target: {effective_tp*100:.1f}%.")
         risk_evaluation = " ".join(risk_parts)
 
-        # Learning & Adaptation Notes
-        regime_winrate = self.memory.data.get("regime_stats", {}).get(regime, {}).get("win_rate", 50.0)
-        total_mem_trades = self.memory.data.get("total_trades", 0)
         learning_notes = (
-            f"Experience: {total_mem_trades} trades analyzed across sessions. "
+            f"Total experience: {self.memory.data.get('total_trades', 0)} trades. "
             f"Regime historical win-rate: {regime_winrate:.1f}%. "
-            f"Effective conviction threshold: {effective_threshold*100:.1f}% (Base: {base_threshold*100:.1f}%)."
+            f"Cognitive score: {top_score:.1f}/100 (Hurdle: {hurdle:.1f})."
         )
 
-        # Reasoning Summary
         if action == +1:
             reasoning_summary = (
-                f"EXECUTING LONG: High-probability bullish alignment ({best_conviction*100:.1f}% conviction >= {effective_threshold*100:.0f}%), "
-                f"expected move {exp_ret*100:+.2f}% covers costs, 15m trend confirmed. Bracket: TP {effective_tp*100:.1f}%, SL {effective_sl*100:.1f}%."
+                f"AUTONOMOUS BUY: Cognitive score {bullish_score:.1f} exceeds hurdle {hurdle:.1f}. "
+                f"Brain identified {setup_type} with favorable {effective_tp/effective_sl:.1f}:1 reward-to-risk. "
+                f"Targets: TP ${current_price*(1+effective_tp):,.1f} (+{effective_tp*100:.1f}%), SL ${current_price*(1-effective_sl):,.1f} (-{effective_sl*100:.1f}%)."
             )
         elif action == -1:
             reasoning_summary = (
-                f"EXECUTING SHORT: High-probability bearish alignment ({best_conviction*100:.1f}% conviction >= {effective_threshold*100:.0f}%), "
-                f"expected move {exp_ret*100:+.2f}% covers costs, 15m trend confirmed. Bracket: TP {effective_tp*100:.1f}%, SL {effective_sl*100:.1f}%."
+                f"AUTONOMOUS SELL: Cognitive score {bearish_score:.1f} exceeds hurdle {hurdle:.1f}. "
+                f"Brain identified {setup_type} with favorable {effective_tp/effective_sl:.1f}:1 reward-to-risk. "
+                f"Targets: TP ${current_price*(1-effective_tp):,.1f} (-{effective_tp*100:.1f}%), SL ${current_price*(1+effective_sl):,.1f} (+{effective_sl*100:.1f}%)."
             )
         else:
-            missing = []
-            if not c1_conviction_ok:
-                missing.append(f"Conviction ({best_conviction*100:.1f}% < {effective_threshold*100:.0f}%)")
-            if not c2_return_ok:
-                missing.append(f"Hurdle ({abs(exp_ret)*100:.2f}% < {min_return_hurdle*100:.2f}%)")
-            if not c3_trend_ok:
-                missing.append("15m Trend Alignment")
-            if not c4_macro_ok:
-                missing.append("1h Macro Trend Alignment")
-            missing_str = ", ".join(missing) if missing else "Confirmation"
-            reasoning_summary = f"STANDBY: Waiting for {missing_str}. Maintaining capital preservation."
+            gap = hurdle - top_score
+            reasoning_summary = (
+                f"STANDBY: Edge score {top_score:.1f} is {gap:.1f} points below operational threshold ({hurdle:.1f}). "
+                f"Maintaining capital preservation until high-asymmetry opportunity aligns."
+            )
 
         now_str = datetime.now().strftime("%Y-%m-%d %I:%M:%S %p")
         return AgentThought(
@@ -351,8 +398,8 @@ class CognitiveAgentBrain:
             market_thesis=market_thesis,
             risk_evaluation=risk_evaluation,
             learning_notes=learning_notes,
-            conditions_met=conditions_met,
-            total_conditions=4,
+            cognitive_score=round(top_score, 1),
+            setup_type=setup_type,
         )
 
     def reflect_on_trade(

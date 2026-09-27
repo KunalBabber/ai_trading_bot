@@ -513,12 +513,12 @@ def get_delta_symbols():
 
 # Cached candle fetch & preview inference when the bot is stopped (cached 60s to prevent CPU thrashing)
 @st.cache_data(ttl=60)
-def get_market_preview(symbol: str, resolution: str, prob_threshold: float, min_return_hurdle: float, require_1h_trend: bool = False):
+def get_market_preview(symbol: str, resolution: str, agent_temperament: str = "Autonomous Cognitive"):
     try:
         c = DeltaClient(timeout=4)
         candles = c.fetch_candles(symbol, resolution, limit=160)
         if candles.empty or len(candles) < 96:
-            return candles, 0.0, {}, {"p_long": 0.5, "p_short": 0.5, "rel_long": 0.5, "rel_short": 0.5, "ai_confidence": 0.5, "expected_return": 0.0, "signal_side": 0}
+            return candles, 0.0, {}, {"p_long": 0.5, "p_short": 0.5, "rel_long": 0.5, "rel_short": 0.5, "ai_confidence": 0.5, "expected_return": 0.0, "signal_side": 0}, None
 
         current_price = float(candles["close"].iloc[-1])
         model_prev, engine_prev = get_preview_model()
@@ -534,18 +534,6 @@ def get_market_preview(symbol: str, resolution: str, prob_threshold: float, min_
         rel_short = p_short / total_p
         ai_conf = max(rel_long, rel_short)
 
-        sig_prev = make_signal(
-            predicted_return=exp_ret,
-            p_long=p_long,
-            p_short=p_short,
-            trend_15m=comp_metrics.get("trend_15m", 0.0),
-            trend_1h=comp_metrics.get("trend_1h", 0.0),
-            atr_pct=comp_metrics.get("atr_pct", 0.005),
-            long_probability=prob_threshold,
-            short_probability=prob_threshold,
-            min_expected_return=min_return_hurdle,
-            require_1h_trend=require_1h_trend,
-        )
         predictions = {
             "p_long": p_long,
             "p_short": p_short,
@@ -553,11 +541,21 @@ def get_market_preview(symbol: str, resolution: str, prob_threshold: float, min_
             "rel_short": rel_short,
             "ai_confidence": ai_conf,
             "expected_return": exp_ret,
-            "signal_side": sig_prev.side,
         }
-        return candles, current_price, comp_metrics, predictions
+
+        # Autonomous Agent Brain Deliberation
+        preview_thought = agent_brain.deliberate(
+            metrics=comp_metrics,
+            predictions=predictions,
+            current_price=current_price,
+            active_position={"side": 0, "size": 0, "entry_price": 0.0, "unrealized_pnl": 0.0},
+            cycle_count=1,
+            cfg={"temperament": agent_temperament},
+        )
+        predictions["signal_side"] = preview_thought.action
+        return candles, current_price, comp_metrics, predictions, asdict(preview_thought)
     except Exception:
-        return pd.DataFrame(), 0.0, {}, {"p_long": 0.5, "p_short": 0.5, "rel_long": 0.5, "rel_short": 0.5, "ai_confidence": 0.5, "expected_return": 0.0, "signal_side": 0}
+        return pd.DataFrame(), 0.0, {}, {"p_long": 0.5, "p_short": 0.5, "rel_long": 0.5, "rel_short": 0.5, "ai_confidence": 0.5, "expected_return": 0.0, "signal_side": 0}, None
 
 
 
@@ -574,10 +572,7 @@ DEFAULT_SETTINGS = {
     "cfg_sizing_mode": "Risk Budget %",
     "cfg_fixed_contracts": 1,
     "cfg_risk_pct": 0.3,
-    "cfg_prob_threshold": 0.52,
-    "cfg_min_return_hurdle": 0.10,
-    "cfg_tp_target": 1.6,
-    "cfg_require_1h_trend": False,
+    "cfg_agent_temperament": "Autonomous Cognitive",
 }
 
 def load_persisted_settings():
@@ -766,25 +761,28 @@ with st.sidebar:
         risk_pct = st.slider("Risk per Trade (% Equity)", min_value=0.1, max_value=2.0, step=0.1, key="cfg_risk_pct")
         risk_per_trade = risk_pct / 100.0
 
-    # 5. AI Conviction & Targets
-    with st.expander("🎯 **AI Conviction & Strategy**", expanded=False):
-        prob_threshold = st.slider("Min AI Confidence Cutoff", min_value=0.40, max_value=0.85, step=0.01, format="%.2f", key="cfg_prob_threshold", help="Recommended: 0.52 (52%). Above 50% guarantees directional statistical advantage.")
-        min_return_hurdle_pct = st.slider("Min Expected Return (%)", min_value=0.01, max_value=0.50, step=0.01, format="%.2f%%", key="cfg_min_return_hurdle", help="Recommended: 0.10%. Minimum predicted return hurdle to cover fees and slippage.")
-        min_return_hurdle = min_return_hurdle_pct / 100.0
-        take_profit_target_pct = st.slider("Take Profit (%)", min_value=0.3, max_value=5.0, step=0.1, format="%.1f%%", key="cfg_tp_target")
-        take_profit_target = take_profit_target_pct / 100.0
-        require_1h_trend = st.checkbox("Strict 1h Macro Trend Filter (EMA20/50)", key="cfg_require_1h_trend", help="If unchecked (Recommended), bot acts on 15m momentum with 50% higher win rate.")
+    # 5. Autonomous Agent Brain Governance
+    st.markdown("### 🧠 **Autonomous Agent Brain**")
+    agent_temperament = st.selectbox(
+        "Agent Thinking Temperament",
+        ["Autonomous Cognitive", "Aggressive Edge Hunter", "Defensive Capital Preserver"],
+        index=0,
+        key="cfg_agent_temperament",
+        help="Full autonomous brain controls: The Agent analyzes market flow, RSI exhaustion, volatility, and neural edge to decide when to trade on its own without manual rule cutoffs.",
+    )
+    st.info(
+        "🧠 **Autonomous Decision Mode Active**\n\n"
+        "Agent apna dimaag khud use karta hai. Kisi manual probability cutoff ya static strategy rule ki zaroorat nahi hai. "
+        "Agent market structure aur expected reward/risk dekhkar khud trading karega.",
+        icon="✨",
+    )
 
     # Automatically persist settings to disk whenever altered
     save_persisted_settings()
 
     # Dynamically propagate updated strategy parameters to bot_manager if running
     bot_manager.update_config({
-        "long_probability": prob_threshold,
-        "short_probability": prob_threshold,
-        "min_expected_return": min_return_hurdle,
-        "take_profit": take_profit_target,
-        "require_1h_trend": require_1h_trend,
+        "temperament": agent_temperament,
         "leverage": leverage_val,
         "sizing_mode": "fixed" if sizing_mode == "Fixed Contracts" else "risk_budget",
         "fixed_contracts": fixed_contracts,
@@ -810,11 +808,7 @@ with st.sidebar:
                 "sizing_mode": "fixed" if sizing_mode == "Fixed Contracts" else "risk_budget",
                 "fixed_contracts": fixed_contracts,
                 "risk_per_trade": risk_per_trade,
-                "long_probability": prob_threshold,
-                "short_probability": prob_threshold,
-                "min_expected_return": min_return_hurdle,
-                "take_profit": take_profit_target,
-                "require_1h_trend": require_1h_trend,
+                "temperament": agent_temperament,
                 "poll_interval": 8,
             }
             bot_manager.start_bot(run_cfg)
@@ -847,20 +841,8 @@ def render_dashboard(
     resolution: str,
     active_tz=IST_TZ,
     active_tz_abbr: str = "IST",
-    prob_threshold: float = 0.52,
-    min_return_hurdle: float = 0.0010,
-    take_profit_target: float = 0.016,
-    require_1h_trend: bool = False,
+    agent_temperament: str = "Autonomous Cognitive",
 ):
-    # Ensure thresholds dynamically match current session state if modified in sidebar
-    if "cfg_prob_threshold" in st.session_state:
-        prob_threshold = float(st.session_state["cfg_prob_threshold"])
-    if "cfg_min_return_hurdle" in st.session_state:
-        min_return_hurdle = float(st.session_state["cfg_min_return_hurdle"]) / 100.0
-    if "cfg_tp_target" in st.session_state:
-        take_profit_target = float(st.session_state["cfg_tp_target"]) / 100.0
-    if "cfg_require_1h_trend" in st.session_state:
-        require_1h_trend = bool(st.session_state["cfg_require_1h_trend"])
 
     state = bot_manager.get_state()
     is_running = state["is_running"]
@@ -874,9 +856,10 @@ def render_dashboard(
     specs = state["product_specs"]
 
     # When bot is not running, use cached AI preview (cached for 60 seconds to prevent CPU overload)
+    preview_thought_dict = None
     if not is_running or candles.empty:
-        prev_candles, prev_price, prev_metrics, prev_preds = get_market_preview(
-            symbol, resolution, prob_threshold, min_return_hurdle, require_1h_trend
+        prev_candles, prev_price, prev_metrics, prev_preds, prev_th = get_market_preview(
+            symbol, resolution, agent_temperament
         )
         if not prev_candles.empty:
             candles = prev_candles
@@ -885,6 +868,7 @@ def render_dashboard(
                 metrics = prev_metrics
             if not predictions or predictions.get("expected_return", 0.0) == 0.0:
                 predictions = prev_preds
+            preview_thought_dict = prev_th
 
 
     # Header Ribbon & Overall P&L Calculations
@@ -943,68 +927,24 @@ def render_dashboard(
 
     st.markdown("---")
 
-    # Metrics Row
-    m1, m2, m3, m4, m5, m6 = st.columns(6)
+    p_long = float(predictions.get("p_long", 0.5))
+    p_short = float(predictions.get("p_short", 0.5))
+    exp_ret = float(predictions.get("expected_return", 0.0))
 
-    p_long = predictions.get("p_long", 0.5)
-    p_short = predictions.get("p_short", 0.5)
-    exp_ret = predictions.get("expected_return", 0.0)
-
-    t15 = metrics.get("trend_15m", 0.0)
-    t1h = metrics.get("trend_1h", 0.0)
+    t15 = float(metrics.get("trend_15m", 0.0))
+    t1h = float(metrics.get("trend_1h", 0.0))
     trend_15_str = "🟢 Bullish" if t15 > 0 else "🔴 Bearish"
     trend_1h_str = "🟢 Bullish" if t1h > 0 else "🔴 Bearish"
 
     total_p = p_long + p_short + 1e-12
     rel_long = p_long / total_p
     rel_short = p_short / total_p
-    ai_conf = max(rel_long, rel_short) * 100.0
+    best_conviction = max(rel_long, rel_short)
+    ai_conf = best_conviction * 100.0
     active_direction = "Bullish (Long)" if rel_long >= rel_short else "Bearish (Short)"
 
-    # Evaluate dynamic signal using current thresholds
-    dynamic_sig = make_signal(
-        predicted_return=exp_ret,
-        p_long=p_long,
-        p_short=p_short,
-        trend_15m=t15,
-        trend_1h=t1h,
-        atr_pct=metrics.get("atr_pct", 0.005),
-        long_probability=prob_threshold,
-        short_probability=prob_threshold,
-        min_expected_return=min_return_hurdle,
-        require_1h_trend=require_1h_trend,
-    )
-    sig_side = dynamic_sig.side
-    sig_label = "BUY (+1) 🚀" if sig_side == 1 else ("SELL (-1) 🔻" if sig_side == -1 else "FLAT (Wait)")
-
-    with m1:
-        st.metric("AI Signal", sig_label)
-    with m2:
-        st.metric("AI Conviction", f"{ai_conf:.1f}%", delta=active_direction)
-    with m3:
-        st.metric("Raw P(L) / P(S)", f"{p_long * 100:.1f}% / {p_short * 100:.1f}%")
-    with m4:
-        st.metric("Expected Return", f"{exp_ret * 100:+.2f}%")
-    with m5:
-        st.metric("15m Trend", trend_15_str)
-    with m6:
-        st.metric("1h Macro Trend", trend_1h_str)
-
-    with st.expander("🎓 **Reference Infographic: Static Blueprint & Strategy Overview**", expanded=False):
-        if os.path.exists("artifacts/ai_trade_lifecycle_diagram.png"):
-            st.image("artifacts/ai_trade_lifecycle_diagram.png", use_container_width=True)
-        st.markdown(
-            """
-            ### **How the Bot Works in 4 Simple Steps:**
-            1. **Lookback Scan (Past 8 Hours):** Every cycle, the bot reads the last **96 candles** (5m bars) and computes 16 multi-resolution indicators.
-            2. **GRU AI Prediction:** The neural network forecasts `P(Long)`, `P(Short)`, and `Expected Return` for the next 12 bars (1 hour).
-            3. **4-Condition Checklist:** The bot checks the 4 rules below. If ANY rule fails, it stays FLAT/WAIT to protect capital.
-            4. **Bracket Targets:** When triggered, automatic Stop Loss and Take Profit brackets are placed.
-            """
-        )
-
-    # === 🧠 AUTONOMOUS COGNITIVE AGENT BRAIN CONSOLE ===
-    agent_thought = state.get("agent_thought")
+    # === 🧠 AUTONOMOUS COGNITIVE AGENT BRAIN RESOLUTION ===
+    agent_thought = state.get("agent_thought") or preview_thought_dict
     agent_mem = state.get("agent_memory") or agent_brain.memory.data
 
     if not agent_thought:
@@ -1015,13 +955,7 @@ def render_dashboard(
                 current_price=current_price,
                 active_position=position,
                 cycle_count=state.get("cycle_count", 0),
-                cfg={
-                    "long_probability": prob_threshold,
-                    "short_probability": prob_threshold,
-                    "min_expected_return": min_return_hurdle,
-                    "take_profit": take_profit_target,
-                    "require_1h_trend": require_1h_trend,
-                },
+                cfg={"temperament": agent_temperament},
             )
             thought_data = asdict(prev_thought)
         except Exception:
@@ -1031,12 +965,56 @@ def render_dashboard(
                 "risk_evaluation": "Evaluating market volatility and downside buffer...",
                 "reasoning_summary": "Synthesizing signals and waiting for high-conviction alignment.",
                 "learning_notes": "Episodic memory active.",
-                "dynamic_tp_pct": take_profit_target,
+                "dynamic_tp_pct": 0.018,
                 "dynamic_sl_pct": 0.008,
+                "action": 0,
+                "action_label": "STANDBY (Preserving Capital)",
+                "cognitive_score": 50.0,
+                "setup_type": "Consolidation Scan",
             }
     else:
         thought_data = agent_thought
 
+    dyn_tp = float(thought_data.get("dynamic_tp_pct", 0.018))
+    dyn_sl = float(thought_data.get("dynamic_sl_pct", 0.008))
+    cog_score = float(thought_data.get("cognitive_score", 50.0))
+    setup_name = str(thought_data.get("setup_type", "Consolidation Scan"))
+    agent_action = int(thought_data.get("action", 0))
+    action_label = str(thought_data.get("action_label", "STANDBY (Preserving Capital)"))
+
+    # === TOP METRICS ROW ===
+    m1, m2, m3, m4, m5, m6 = st.columns(6)
+    with m1:
+        st.metric("Agent Brain Decision", action_label)
+    with m2:
+        st.metric("Cognitive Score", f"{cog_score:.1f}/100", delta=active_direction)
+    with m3:
+        st.metric("Raw P(L) / P(S)", f"{p_long * 100:.1f}% / {p_short * 100:.1f}%")
+    with m4:
+        st.metric("Expected Return", f"{exp_ret * 100:+.2f}%")
+    with m5:
+        st.metric("Recognized Setup", setup_name)
+    with m6:
+        st.metric("Dynamic Brackets", f"TP {dyn_tp*100:.1f}% | SL {dyn_sl*100:.1f}%")
+
+    with st.expander("🎓 **How the Autonomous Cognitive Agent Thinks & Trades**", expanded=False):
+        if os.path.exists("artifacts/ai_trade_lifecycle_diagram.png"):
+            st.image("artifacts/ai_trade_lifecycle_diagram.png", use_container_width=True)
+        st.markdown(
+            """
+            ### **How the Autonomous Agent Brain Operates:**
+            1. **Multi-Horizon Perception:** Every scan cycle, the bot analyzes real-time candle order flow, computes 16 technical features across multiple timeframes, and feeds the sequence into the GRU neural network.
+            2. **Deliberate Reasoning Matrix:** The Cognitive Brain evaluates:
+               - **Neural Alpha:** Directional conviction ($P_{Long}$ vs $P_{Short}$).
+               - **Payoff Asymmetry:** Expected return magnitude covering exchange maker/taker fees and slippage.
+               - **Setup Recognition:** Distinguishes momentum expansion vs. discount accumulation vs. exhaustion reversals.
+               - **Market Regime:** Automatically classifies Choppy Range, Momentum, High Volatility, or Mean-Reversion.
+            3. **Autonomous Execution:** When the cognitive score clears the temperament hurdle, the Agent places the order on Delta Exchange with dynamic ATR-scaled Stop Loss and Take Profit brackets.
+            4. **Episodic Learning & Defense Reflex:** Every closed trade triggers a post-mortem reflection. In choppy or unfavorable conditions, Defense Mode automatically raises the hurdle and widens stops.
+            """
+        )
+
+    # === 🧠 AUTONOMOUS COGNITIVE AGENT BRAIN CONSOLE ===
     cur_regime = thought_data.get("regime", "CHOPPY_RANGE")
     regime_class_map = {
         "BULL_MOMENTUM": ("regime-bull", "🟢 BULL MOMENTUM EXPANSION"),
@@ -1056,9 +1034,6 @@ def render_dashboard(
     r_stats = agent_mem.get("regime_stats", {}).get(cur_regime, {})
     r_wr = r_stats.get("win_rate", 0.0)
     r_tr = r_stats.get("trades", 0)
-
-    dyn_tp = thought_data.get("dynamic_tp_pct", take_profit_target)
-    dyn_sl = thought_data.get("dynamic_sl_pct", 0.008)
 
     defense_badge = (
         '<span style="background: rgba(239, 68, 68, 0.25); color: #fca5a5; border: 1px solid #ef4444; padding: 3px 10px; border-radius: 12px; font-weight: 700; font-size: 0.76rem;">🛡️ DEFENSE MODE (+3% Hurdle)</span>'
@@ -1133,33 +1108,22 @@ def render_dashboard(
         unsafe_allow_html=True,
     )
 
-    # === LIVE AI DECISION ENGINE & 4-STEP CHECKLIST HUD ===
-    c1_pass = (rel_long >= prob_threshold) or (rel_short >= prob_threshold) or (p_long >= prob_threshold) or (p_short >= prob_threshold)
-    c2_pass = abs(exp_ret) >= min_return_hurdle
-    c3_pass = (t15 > 0 if rel_long >= rel_short else t15 < 0)
-    c4_pass = True if not require_1h_trend else (t1h > 0 if rel_long >= rel_short else t1h < 0)
-    all_pass = c1_pass and c2_pass and c3_pass and c4_pass
-    passed_count = sum([c1_pass, c2_pass, c3_pass, c4_pass])
-
-    st.markdown("### 🎓 **Live AI Decision Engine (Real-Time 4-Step Checklist)**")
+    st.markdown("### 🎓 **Autonomous Cognitive Decision Matrix (Real-Time Synthesis)**")
     c_hud1, c_hud2, c_hud3, c_hud4 = st.columns(4)
 
     with c_hud1:
-        cls1 = "hud-card-pass" if c1_pass else "hud-card-wait"
-        tag1 = '<span class="hud-tag-pass">🟢 PASSED</span>' if c1_pass else '<span class="hud-tag-wait">❌ WAITING</span>'
         st.markdown(
             f"""
-            <div class="hud-card {cls1}">
+            <div class="hud-card hud-card-pass">
                 <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
-                    <span style="font-weight: 700; font-size: 0.88rem; color: #f0f6fc;">1. AI Confidence</span>
-                    {tag1}
+                    <span style="font-weight: 700; font-size: 0.88rem; color: #f0f6fc;">1. Directional Edge</span>
+                    <span class="hud-tag-pass">NEURAL ALPHA</span>
                 </div>
-                <div style="font-size: 1.15rem; font-weight: 700; color: {'#38bdf8' if c1_pass else '#94a3b8'};">
-                    {ai_conf:.1f}% <span style="font-size: 0.75rem; color: #64748b;">(Need &ge; {prob_threshold * 100:.0f}%)</span>
+                <div style="font-size: 1.15rem; font-weight: 700; color: #38bdf8;">
+                    {best_conviction*100:.1f}% <span style="font-size: 0.75rem; color: #64748b;">({active_direction})</span>
                 </div>
                 <div style="font-size: 0.76rem; color: #8b949e; margin-top: 4px;">
-                    Lean: <b>{active_direction}</b><br/>
-                    Raw: P(L) {p_long*100:.1f}% | P(S) {p_short*100:.1f}%
+                    P(L) {p_long*100:.1f}% | P(S) {p_short*100:.1f}%
                 </div>
             </div>
             """,
@@ -1167,20 +1131,18 @@ def render_dashboard(
         )
 
     with c_hud2:
-        cls2 = "hud-card-pass" if c2_pass else "hud-card-wait"
-        tag2 = '<span class="hud-tag-pass">🟢 PASSED</span>' if c2_pass else '<span class="hud-tag-wait">❌ WAITING</span>'
         st.markdown(
             f"""
-            <div class="hud-card {cls2}">
+            <div class="hud-card hud-card-pass">
                 <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
-                    <span style="font-weight: 700; font-size: 0.88rem; color: #f0f6fc;">2. Profit Hurdle</span>
-                    {tag2}
+                    <span style="font-weight: 700; font-size: 0.88rem; color: #f0f6fc;">2. Asymmetry Horizon</span>
+                    <span class="hud-tag-pass">HORIZON E(R)</span>
                 </div>
-                <div style="font-size: 1.15rem; font-weight: 700; color: {'#38bdf8' if c2_pass else '#94a3b8'};">
-                    {exp_ret*100:+.2f}% <span style="font-size: 0.75rem; color: #64748b;">(Need &ge; &plusmn;{min_return_hurdle * 100:.2f}%)</span>
+                <div style="font-size: 1.15rem; font-weight: 700; color: {'#34d399' if exp_ret > 0 else '#ef5350'};">
+                    {exp_ret*100:+.2f}%
                 </div>
                 <div style="font-size: 0.76rem; color: #8b949e; margin-top: 4px;">
-                    Predicted move covers fee + slippage
+                    Covers exchange fees &amp; slippage
                 </div>
             </div>
             """,
@@ -1188,21 +1150,18 @@ def render_dashboard(
         )
 
     with c_hud3:
-        cls3 = "hud-card-pass" if c3_pass else "hud-card-wait"
-        tag3 = '<span class="hud-tag-pass">🟢 ALIGNED</span>' if c3_pass else '<span class="hud-tag-wait">❌ DISAGREES</span>'
-        t15_name = "Bullish (+1)" if t15 > 0 else ("Bearish (-1)" if t15 < 0 else "Neutral (0)")
         st.markdown(
             f"""
-            <div class="hud-card {cls3}">
+            <div class="hud-card hud-card-pass">
                 <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
-                    <span style="font-weight: 700; font-size: 0.88rem; color: #f0f6fc;">3. 15m Fast Trend</span>
-                    {tag3}
+                    <span style="font-weight: 700; font-size: 0.88rem; color: #f0f6fc;">3. Recognized Setup</span>
+                    <span class="hud-tag-pass">PATTERN</span>
                 </div>
-                <div style="font-size: 1.15rem; font-weight: 700; color: {'#34d399' if t15 > 0 else ('#ef5350' if t15 < 0 else '#94a3b8')};">
-                    {t15_name}
+                <div style="font-size: 0.95rem; font-weight: 700; color: #fbbf24; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
+                    {setup_name}
                 </div>
                 <div style="font-size: 0.76rem; color: #8b949e; margin-top: 4px;">
-                    EMA 8 vs EMA 21 fast momentum
+                    15m: {t15*100:+.2f}% | RSI: {metrics.get('rsi_14', 0.50)*100:.1f}%
                 </div>
             </div>
             """,
@@ -1210,64 +1169,59 @@ def render_dashboard(
         )
 
     with c_hud4:
-        t1h_aligned = (t1h > 0 if rel_long >= rel_short else t1h < 0)
-        cls4 = "hud-card-pass" if c4_pass else "hud-card-wait"
-        if require_1h_trend:
-            tag4 = '<span class="hud-tag-pass">🟢 ALIGNED</span>' if t1h_aligned else '<span class="hud-tag-wait">❌ DISAGREES</span>'
-            status_desc = "Strict macro filter (Active)"
-        else:
-            tag4 = '<span class="hud-tag-pass">🟢 CONFIRMED</span>' if t1h_aligned else '<span class="hud-tag-pass" style="background:#1e293b; color:#94a3b8; border-color:#334155;">ℹ️ OPTIONAL</span>'
-            status_desc = "Macro direction (Optional)"
-
-        t1h_name = "Bullish (+1)" if t1h > 0 else ("Bearish (-1)" if t1h < 0 else "Neutral (0)")
         st.markdown(
             f"""
-            <div class="hud-card {cls4}">
+            <div class="hud-card hud-card-pass">
                 <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
-                    <span style="font-weight: 700; font-size: 0.88rem; color: #f0f6fc;">4. 1h Macro Trend</span>
-                    {tag4}
+                    <span style="font-weight: 700; font-size: 0.88rem; color: #f0f6fc;">4. Dynamic Brackets</span>
+                    <span class="hud-tag-pass">VOL ADAPTED</span>
                 </div>
-                <div style="font-size: 1.15rem; font-weight: 700; color: {'#fbbf24' if t1h > 0 else ('#ef5350' if t1h < 0 else '#94a3b8')};">
-                    {t1h_name}
+                <div style="font-size: 1.15rem; font-weight: 700; color: #a78bfa;">
+                    TP {dyn_tp*100:.1f}% | SL {dyn_sl*100:.1f}%
                 </div>
                 <div style="font-size: 0.76rem; color: #8b949e; margin-top: 4px;">
-                    {status_desc}
+                    ATR: {metrics.get('atr_pct', 0.005)*100:.2f}%
                 </div>
             </div>
             """,
             unsafe_allow_html=True,
         )
 
-    # Decision Summary Banner
-    if all_pass:
-        hud_banner = """
-        <div style="background-color: #064e3b; border: 1px solid #10b981; border-radius: 8px; padding: 9px 16px; margin-bottom: 12px; display: flex; justify-content: space-between; align-items: center;">
+    # Executive Action Banner
+    if agent_action == 1:
+        banner_html = f"""
+        <div style="background-color: #064e3b; border: 1px solid #10b981; border-radius: 8px; padding: 10px 16px; margin-bottom: 12px; display: flex; justify-content: space-between; align-items: center;">
             <div style="display: flex; align-items: center; gap: 8px;">
                 <span class="pulse-dot"></span>
-                <strong style="color: #4ade80;">READY TO TRADE</strong>
-                <span style="color: #6ee7b7; font-size: 0.85rem;">All AI & Regime conditions satisfied! Entry order active.</span>
+                <strong style="color: #4ade80; font-size: 1rem;">AUTONOMOUS BUY ACTIVE 🚀</strong>
+                <span style="color: #6ee7b7; font-size: 0.85rem;">Brain confirmed {setup_name} (Cognitive Score: {cog_score:.1f}/100).</span>
             </div>
-            <span style="color: #a7f3d0; font-weight: 700; font-size: 0.82rem;">4 / 4 CONDITIONS MET</span>
+            <span style="color: #a7f3d0; font-weight: 700; font-size: 0.82rem;">EXECUTIVE ORDER READY</span>
+        </div>
+        """
+    elif agent_action == -1:
+        banner_html = f"""
+        <div style="background-color: #450a0a; border: 1px solid #ef4444; border-radius: 8px; padding: 10px 16px; margin-bottom: 12px; display: flex; justify-content: space-between; align-items: center;">
+            <div style="display: flex; align-items: center; gap: 8px;">
+                <span class="pulse-dot" style="background-color: #ef4444; box-shadow: 0 0 8px #ef4444;"></span>
+                <strong style="color: #f87171; font-size: 1rem;">AUTONOMOUS SELL ACTIVE 🔻</strong>
+                <span style="color: #fca5a5; font-size: 0.85rem;">Brain confirmed {setup_name} (Cognitive Score: {cog_score:.1f}/100).</span>
+            </div>
+            <span style="color: #fecaca; font-weight: 700; font-size: 0.82rem;">EXECUTIVE ORDER READY</span>
         </div>
         """
     else:
-        reasons_needed = []
-        if not c1_pass: reasons_needed.append(f"AI Confidence ({ai_conf:.1f}% < {prob_threshold * 100:.0f}%)")
-        if not c2_pass: reasons_needed.append(f"Profit Hurdle ({exp_ret*100:+.2f}% < &plusmn;{min_return_hurdle * 100:.2f}%)")
-        if not c3_pass: reasons_needed.append("15m Trend Alignment")
-        if not c4_pass and require_1h_trend: reasons_needed.append("1h Macro Trend Alignment")
-        reason_txt = ", ".join(reasons_needed) if reasons_needed else "Waiting for clean setup"
-        hud_banner = f"""
-        <div style="background-color: #0f172a; border: 1px solid #1e293b; border-radius: 8px; padding: 9px 16px; margin-bottom: 12px; display: flex; justify-content: space-between; align-items: center;">
+        banner_html = f"""
+        <div style="background-color: #0f172a; border: 1px solid #1e293b; border-radius: 8px; padding: 10px 16px; margin-bottom: 12px; display: flex; justify-content: space-between; align-items: center;">
             <div style="display: flex; align-items: center; gap: 8px;">
-                <span style="color: #fbbf24; font-size: 1rem;">⏳</span>
-                <strong style="color: #f0f6fc;">STANDBY / WAITING</strong>
-                <span style="color: #94a3b8; font-size: 0.85rem;">Waiting for: <span style="color: #38bdf8; font-weight: 600;">{reason_txt}</span>. Bot stays FLAT to protect your capital.</span>
+                <span style="color: #fbbf24; font-size: 1rem;">🧠</span>
+                <strong style="color: #f0f6fc;">CAPITAL PRESERVATION MODE</strong>
+                <span style="color: #94a3b8; font-size: 0.85rem;">Edge Score: <span style="color: #38bdf8; font-weight: 600;">{cog_score:.1f}/100</span>. Brain is waiting for high-asymmetry risk/reward before putting real funds at risk.</span>
             </div>
-            <span style="color: #64748b; font-weight: 600; font-size: 0.82rem;">{passed_count} / 4 CONDITIONS MET</span>
+            <span style="color: #64748b; font-weight: 600; font-size: 0.82rem;">FLAT / MONITORING</span>
         </div>
         """
-    st.markdown(hud_banner, unsafe_allow_html=True)
+    st.markdown(banner_html, unsafe_allow_html=True)
 
     # === LIVE CANDLESTICK CHART WITH 96-BAR LOOKBACK & FUTURE PREDICTION CONE ===
     if not candles.empty and len(candles) > 5:
@@ -1484,15 +1438,15 @@ def render_dashboard(
                 col=1,
             )
         else:
-            tp_pending = latest_close * (1.0 + take_profit_target)
-            sl_pending = latest_close * (1.0 - 0.008)
+            tp_pending = latest_close * (1.0 + dyn_tp)
+            sl_pending = latest_close * (1.0 - dyn_sl)
             fig.add_trace(
                 go.Scatter(
                     x=[latest_time, future_times[-1]],
                     y=[tp_pending, tp_pending],
                     mode="lines",
                     line=dict(color="#2ecc71", width=1.8, dash="dashdot"),
-                    name=f"Pending TP: ${tp_pending:,.1f} (+{take_profit_target * 100:.1f}%)",
+                    name=f"Dynamic TP: ${tp_pending:,.1f} (+{dyn_tp * 100:.1f}%)",
                 ),
                 row=1,
                 col=1,
@@ -1514,7 +1468,7 @@ def render_dashboard(
                     y=[sl_pending, sl_pending],
                     mode="lines",
                     line=dict(color="#ef4444", width=1.8, dash="dashdot"),
-                    name=f"Pending SL: ${sl_pending:,.1f} (-0.8%)",
+                    name=f"Dynamic SL: ${sl_pending:,.1f} (-{dyn_sl * 100:.1f}%)",
                 ),
                 row=1,
                 col=1,
@@ -1731,8 +1685,5 @@ render_dashboard(
     resolution=timeframe_selected,
     active_tz=active_tz,
     active_tz_abbr=active_tz_abbr,
-    prob_threshold=prob_threshold,
-    min_return_hurdle=min_return_hurdle,
-    take_profit_target=take_profit_target,
-    require_1h_trend=require_1h_trend,
+    agent_temperament=agent_temperament,
 )
