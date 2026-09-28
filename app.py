@@ -260,51 +260,52 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
+def format_terminal_log_line(raw_line: str) -> str:
+    """Format a single log line with color coding — returns styled HTML span."""
+    line = str(raw_line).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    ts_part = ""
+    body_part = line
+    if line.startswith("[") and "]" in line[:20]:
+        idx = line.find("]") + 1
+        ts_part = f'<span style="color:#64748b;font-size:0.74rem;">{line[:idx]}</span> '
+        body_part = line[idx:].strip()
+
+    if any(k in body_part for k in ["ORDER FILLED", "EXECUTION", "BRACKET", "AUTONOMOUS ORDER"]):
+        styled = f'<span style="color:#fbbf24;font-weight:700;">{body_part}</span>'
+    elif any(k in body_part for k in ["BUY", "TAKE PROFIT", "[OK]", "LONG", "WIN"]):
+        styled = f'<span style="color:#4ade80;font-weight:600;">{body_part}</span>'
+    elif any(k in body_part for k in ["SELL", "STOP LOSS", "REVERSAL", "PANIC", "[ERROR]", "SHORT"]):
+        styled = f'<span style="color:#f87171;font-weight:600;">{body_part}</span>'
+    elif "SCAN #" in body_part:
+        styled = f'<span style="color:#38bdf8;font-weight:600;">{body_part}</span>'
+    elif "AGENT BRAIN" in body_part or "AGENT LESSON" in body_part:
+        styled = f'<span style="color:#a78bfa;font-weight:600;">{body_part}</span>'
+    elif any(k in body_part for k in ["HEARTBEAT", "[PULSE]"]):
+        styled = f'<span style="color:#818cf8;">{body_part}</span>'
+    elif any(k in body_part for k in ["[WARN]", "Standing by", "Waiting", "Setup"]):
+        styled = f'<span style="color:#94a3b8;">{body_part}</span>'
+    else:
+        styled = f'<span style="color:#cbd5e1;">{body_part}</span>'
+
+    return f'{ts_part}{styled}'
+
+
 def format_terminal_logs(logs, active_tz=IST_TZ):
+    """Format all log lines as HTML. Kept for compatibility."""
     if not logs:
         now_str = datetime.now(active_tz).strftime("%I:%M:%S %p")
         lines = [
-            '<span style="color: #38bdf8; font-weight: 700;">┌──(delta-ai-terminal)─[~/engine]</span>',
-            '<span style="color: #38bdf8; font-weight: 700;">└─$</span> <span style="color: #f0f6fc;">python live_trader.py --daemon</span>',
-            f'<span style="color: #64748b;">[{now_str}]</span> <span style="color: #38bdf8; font-weight: 600;">[SYSTEM]</span> Delta Exchange AI Terminal v2.4 initialized.',
-            f'<span style="color: #64748b;">[{now_str}]</span> <span style="color: #a855f7; font-weight: 600;">[MODEL]</span> GRU Neural Network (96-step sequence, 16 features) loaded from artifacts/gru.pt',
-            f'<span style="color: #64748b;">[{now_str}]</span> <span style="color: #22c55e; font-weight: 600;">[TRANSPORT]</span> REST/WebSocket client ready. Multi-timeframe pipeline (5m, 15m, 1h) active.',
-            f'<span style="color: #64748b;">[{now_str}]</span> <span style="color: #fbbf24; font-weight: 600;">[STANDBY]</span> Engine ready. Click <b style="color: #4ade80;">[▶ Start Bot]</b> in left sidebar to begin live streaming scans.',
+            '<span style="color:#38bdf8;font-weight:700;">┌──(delta-ai-terminal)─[~/engine]</span>',
+            '<span style="color:#38bdf8;font-weight:700;">└─$</span> <span style="color:#f0f6fc;">python live_trader.py --daemon</span>',
+            f'<span style="color:#64748b;">[{now_str}]</span> <span style="color:#38bdf8;font-weight:600;">[SYSTEM]</span> Delta Exchange AI Terminal initialized.',
+            f'<span style="color:#64748b;">[{now_str}]</span> <span style="color:#fbbf24;font-weight:600;">[STANDBY]</span> Click <b style="color:#4ade80;">[▶ Start Bot]</b> to begin scanning.',
         ]
         return "<br>".join(lines)
+    return "<br>".join(format_terminal_log_line(l) for l in logs)
 
-    formatted = []
-    for raw_line in logs:
-        line = str(raw_line).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-        ts_part = ""
-        body_part = line
-        if line.startswith("[") and "]" in line[:20]:
-            idx = line.find("]") + 1
-            ts_part = f'<span style="color: #64748b;">{line[:idx]}</span> '
-            body_part = line[idx:].strip()
-
-        # Syntax color patterns
-        if "ORDER FILLED" in body_part or "EXECUTION" in body_part or "BRACKET" in body_part:
-            styled = f'<span style="color: #fbbf24; font-weight: 700;">{body_part}</span>'
-        elif "BUY" in body_part or "TAKE PROFIT" in body_part or "PROFIT" in body_part or "[OK]" in body_part or "LONG" in body_part:
-            styled = f'<span style="color: #4ade80; font-weight: 600;">{body_part}</span>'
-        elif "SELL" in body_part or "STOP LOSS" in body_part or "REVERSAL" in body_part or "PANIC" in body_part or "[ERROR]" in body_part or "SHORT" in body_part:
-            styled = f'<span style="color: #f87171; font-weight: 600;">{body_part}</span>'
-        elif "SCAN #" in body_part:
-            styled = f'<span style="color: #38bdf8; font-weight: 600;">{body_part}</span>'
-        elif "HEARTBEAT" in body_part or "[PULSE]" in body_part:
-            styled = f'<span style="color: #818cf8;">{body_part}</span>'
-        elif "[WARN]" in body_part or "Standing by" in body_part or "Waiting" in body_part or "Setup" in body_part:
-            styled = f'<span style="color: #94a3b8;">{body_part}</span>'
-        else:
-            styled = f'<span style="color: #cbd5e1;">{body_part}</span>'
-
-        formatted.append(f"{ts_part}{styled}")
-
-    return "<br>".join(formatted)
 
 def render_smart_terminal_html(symbol: str, resolution: str, is_running: bool, status_tag: str, body_content: str, cmd_prompt: str) -> str:
-    """Renders authentic terminal with smart auto-scroll that pauses when user scrolls up."""
+    """[DEPRECATED - kept for compatibility] Use render_terminal_markdown() instead."""
     return f"""
     <!DOCTYPE html>
     <html>
@@ -503,6 +504,116 @@ def render_smart_terminal_html(symbol: str, resolution: str, is_running: bool, s
     </body>
     </html>
     """
+
+
+def render_terminal_markdown(symbol: str, resolution: str, is_running: bool, logs: list, active_tz=IST_TZ) -> str:
+    """
+    Renders terminal as pure inline HTML (no iframe, no components.html).
+    Shows last 35 lines so newest entries are always at the bottom of the
+    fixed-height div. Because this uses st.markdown() inline (no iframe),
+    Streamlit does NOT destroy/recreate the element on fragment refresh,
+    so the terminal never jumps back to the top while the user is reading.
+    """
+    status_dot = (
+        '<span style="color:#4ade80;font-weight:700;">&#11044; SCANNING</span>'
+        if is_running
+        else '<span style="color:#94a3b8;">&#11044; IDLE</span>'
+    )
+    header_right = (
+        f'{status_dot} &nbsp;<span style="color:#475569;">|</span>&nbsp; '
+        f'<span style="color:#94a3b8;font-size:0.75rem;">{symbol} [{resolution}]</span>'
+    )
+
+    # Show last 35 lines — user always sees freshest data without JS scroll tricks
+    display_lines = logs[-35:] if logs else []
+    if display_lines:
+        body_html = "<br>".join(format_terminal_log_line(l) for l in display_lines)
+    else:
+        now_str = datetime.now(active_tz).strftime("%I:%M:%S %p")
+        body_html = (
+            f'<span style="color:#38bdf8;font-weight:700;">&#9484;&#9472;&#9472;(delta-ai-terminal)&#9472;[~/engine]</span><br>'
+            f'<span style="color:#38bdf8;font-weight:700;">&#9492;&#9472;$</span> '
+            f'<span style="color:#f0f6fc;">python live_trader.py --daemon</span><br>'
+            f'<span style="color:#64748b;">[{now_str}]</span> '
+            f'<span style="color:#38bdf8;font-weight:600;">[SYSTEM]</span> Delta AI Terminal initialized. GRU model loaded.<br>'
+            f'<span style="color:#64748b;">[{now_str}]</span> '
+            f'<span style="color:#fbbf24;font-weight:600;">[STANDBY]</span> '
+            f'Click <b style="color:#4ade80;">[&#9654; Start Bot]</b> in the sidebar to begin.'
+        )
+
+    cursor = (
+        '<span style="display:inline-block;width:8px;height:13px;background:#22c55e;'
+        'vertical-align:-2px;animation:delta-blink 1s step-end infinite;"></span>'
+        if is_running else ""
+    )
+    prompt_color = "#38bdf8" if is_running else "#64748b"
+    prompt_text = "live_feed active &mdash; polling tick" if is_running else "standby"
+
+    return f"""
+<style>
+  @keyframes delta-blink {{ 0%,100%{{opacity:1}} 50%{{opacity:0}} }}
+  .dterm-box {{
+    background:#030712;
+    border:1px solid #1e293b;
+    border-radius:10px;
+    overflow:hidden;
+    font-family:'JetBrains Mono','Fira Code',Consolas,monospace;
+    box-shadow:0 8px 24px rgba(0,0,0,.5);
+    margin-bottom:8px;
+  }}
+  .dterm-header {{
+    background:linear-gradient(180deg,#0f172a,#0b1120);
+    padding:9px 14px;
+    display:flex;
+    justify-content:space-between;
+    align-items:center;
+    border-bottom:1px solid #1e293b;
+    font-size:0.78rem;
+    color:#94a3b8;
+  }}
+  .dterm-body {{
+    padding:12px 16px;
+    font-size:0.76rem;
+    line-height:1.65;
+    white-space:pre-wrap;
+    word-break:break-word;
+    color:#e2e8f0;
+    height:290px;
+    overflow-y:auto;
+    background:#030712;
+  }}
+  .dterm-body::-webkit-scrollbar{{width:5px;}}
+  .dterm-body::-webkit-scrollbar-track{{background:#06090f;}}
+  .dterm-body::-webkit-scrollbar-thumb{{background:#1e293b;border-radius:3px;}}
+  .dterm-body::-webkit-scrollbar-thumb:hover{{background:#334155;}}
+  .dterm-footer {{
+    padding:6px 16px 10px;
+    border-top:1px dashed #1e293b;
+    font-size:0.75rem;
+    color:{prompt_color};
+    font-family:monospace;
+    background:#030712;
+  }}
+</style>
+<div class="dterm-box">
+  <div class="dterm-header">
+    <div style="display:flex;align-items:center;gap:8px;">
+      <span style="width:10px;height:10px;border-radius:50%;background:#ef4444;display:inline-block;"></span>
+      <span style="width:10px;height:10px;border-radius:50%;background:#f59e0b;display:inline-block;"></span>
+      <span style="width:10px;height:10px;border-radius:50%;background:#22c55e;display:inline-block;"></span>
+      <span style="margin-left:8px;font-weight:600;color:#94a3b8;">delta-trader-daemon.sh</span>
+    </div>
+    <div>{header_right}</div>
+  </div>
+  <div class="dterm-body">
+{body_html}
+  </div>
+  <div class="dterm-footer">
+    <span style="color:#4ade80;font-weight:bold;">delta-bot@cloud</span>:<span style="color:#38bdf8;">~</span>$ <span style="color:#94a3b8;">{prompt_text}</span> {cursor}
+  </div>
+</div>
+"""
+
 
 DEFAULT_SYMBOLS = ["BTCUSD", "ETHUSD", "SOLUSD", "XRPUSD", "DOGEUSD", "ADAUSD"]
 
@@ -1608,35 +1719,15 @@ def render_dashboard(
             """
         st.markdown(hb_badge, unsafe_allow_html=True)
 
-        # Format Terminal Logs Content (Chronological: newest at bottom, last 80 entries for rich scrollback)
-        display_logs = logs[-80:] if logs else []
-        body_content = format_terminal_logs(display_logs, active_tz)
-
-        status_tag = (
-            '<span style="color: #4ade80; font-weight: 600;">● SCANNING (TICK OK)</span>'
-            if is_running
-            else '<span style="color: #94a3b8;">● IDLE</span>'
-        )
-
-        cursor_elem = '<span class="terminal-cursor"></span>' if is_running else ''
-        cmd_prompt = (
-            f'<div style="margin-top: 10px; padding-top: 6px; border-top: 1px dashed #1e293b; color: #38bdf8; font-family: monospace;">'
-            f'<span style="color: #4ade80; font-weight: bold;">delta-bot@cloud</span>:<span style="color: #38bdf8;">~</span>$ '
-            f'<span style="color: #94a3b8;">live_feed active &mdash; polling tick stream</span> {cursor_elem}</div>'
-            if is_running
-            else f'<div style="margin-top: 10px; padding-top: 6px; border-top: 1px dashed #1e293b; color: #64748b; font-family: monospace;">'
-                 f'<span style="color: #94a3b8;">delta-bot@cloud</span>:<span style="color: #64748b;">~</span>$ standby {cursor_elem}</div>'
-        )
-
-        terminal_html = render_smart_terminal_html(
+        # Render terminal as inline markdown — no iframe, no scroll reset on fragment refresh
+        terminal_md = render_terminal_markdown(
             symbol=state["symbol"],
             resolution=state["resolution"],
             is_running=is_running,
-            status_tag=status_tag,
-            body_content=body_content,
-            cmd_prompt=cmd_prompt,
+            logs=list(logs),
+            active_tz=active_tz,
         )
-        components.html(terminal_html, height=385)
+        st.markdown(terminal_md, unsafe_allow_html=True)
 
 
     # Trade History Table
