@@ -508,24 +508,21 @@ def render_smart_terminal_html(symbol: str, resolution: str, is_running: bool, s
 
 def render_terminal_markdown(symbol: str, resolution: str, is_running: bool, logs: list, active_tz=IST_TZ) -> str:
     """
-    Renders terminal as pure inline HTML (no iframe, no components.html).
-    Shows last 35 lines so newest entries are always at the bottom of the
-    fixed-height div. Because this uses st.markdown() inline (no iframe),
-    Streamlit does NOT destroy/recreate the element on fragment refresh,
-    so the terminal never jumps back to the top while the user is reading.
+    Renders terminal as pure inline HTML (no iframe).
+    Emulates Antigravity IDE / VS Code terminal:
+    - Instant auto-scroll to bottom on every tick without smooth-scroll animation glitch
+    - Auto-detects user scrolling up: locks position cleanly so reading is never disrupted
+    - Auto-resumes auto-scroll as soon as user returns near bottom
+    - Clears stale sessionStorage pause flags
     """
     status_dot = (
-        '<span style="color:#4ade80;font-weight:700;">&#11044; SCANNING</span>'
+        '<span style="color:#4ade80;font-weight:700;">&#11044; SCANNING (TICK OK)</span>'
         if is_running
-        else '<span style="color:#94a3b8;">&#11044; IDLE</span>'
-    )
-    header_right = (
-        f'{status_dot} &nbsp;<span style="color:#475569;">|</span>&nbsp; '
-        f'<span style="color:#94a3b8;font-size:0.75rem;">{symbol} [{resolution}]</span>'
+        else '<span style="color:#94a3b8;">&#11044; IDLE (STANDBY)</span>'
     )
 
-    # Show last 35 lines — user always sees freshest data without JS scroll tricks
-    display_lines = logs[-35:] if logs else []
+    # Show last 80 lines (full scrollback history)
+    display_lines = logs[-80:] if logs else []
     if display_lines:
         body_html = "<br>".join(format_terminal_log_line(l) for l in display_lines)
     else:
@@ -534,85 +531,161 @@ def render_terminal_markdown(symbol: str, resolution: str, is_running: bool, log
             f'<span style="color:#38bdf8;font-weight:700;">&#9484;&#9472;&#9472;(delta-ai-terminal)&#9472;[~/engine]</span><br>'
             f'<span style="color:#38bdf8;font-weight:700;">&#9492;&#9472;$</span> '
             f'<span style="color:#f0f6fc;">python live_trader.py --daemon</span><br>'
-            f'<span style="color:#64748b;">[{now_str}]</span> '
-            f'<span style="color:#38bdf8;font-weight:600;">[SYSTEM]</span> Delta AI Terminal initialized. GRU model loaded.<br>'
-            f'<span style="color:#64748b;">[{now_str}]</span> '
-            f'<span style="color:#fbbf24;font-weight:600;">[STANDBY]</span> '
-            f'Click <b style="color:#4ade80;">[&#9654; Start Bot]</b> in the sidebar to begin.'
+            f'<span style="color:#64748b;">[{now_str}]</span> <span style="color:#38bdf8;font-weight:600;">[SYSTEM]</span> Delta AI Terminal v2.5 initialized. GRU neural engine ready.<br>'
+            f'<span style="color:#64748b;">[{now_str}]</span> <span style="color:#a855f7;font-weight:600;">[AGENT]</span> Autonomous Cognitive Brain loaded with episodic memory ledger.<br>'
+            f'<span style="color:#64748b;">[{now_str}]</span> <span style="color:#fbbf24;font-weight:600;">[STANDBY]</span> Click <b style="color:#4ade80;">[&#9654; Start Bot]</b> in the sidebar to activate live scanning.'
         )
 
     cursor = (
         '<span style="display:inline-block;width:8px;height:13px;background:#22c55e;'
-        'vertical-align:-2px;animation:delta-blink 1s step-end infinite;"></span>'
+        'vertical-align:-2px;animation:dterm-blink 1s step-end infinite;"></span>'
         if is_running else ""
     )
     prompt_color = "#38bdf8" if is_running else "#64748b"
-    prompt_text = "live_feed active &mdash; polling tick" if is_running else "standby"
+    prompt_text = "live_feed active &mdash; polling tick stream" if is_running else "standby"
 
     return f"""
 <style>
-  @keyframes delta-blink {{ 0%,100%{{opacity:1}} 50%{{opacity:0}} }}
+  @keyframes dterm-blink {{ 0%,100%{{opacity:1}} 50%{{opacity:0}} }}
+  @keyframes dterm-pill-glow {{
+    0%,100%{{box-shadow:0 4px 14px rgba(2,132,199,.5),0 0 6px rgba(56,189,248,.3);}}
+    50%{{box-shadow:0 4px 22px rgba(2,132,199,.9),0 0 14px rgba(56,189,248,.6);}}
+  }}
   .dterm-box {{
-    background:#030712;
-    border:1px solid #1e293b;
-    border-radius:10px;
-    overflow:hidden;
-    font-family:'JetBrains Mono','Fira Code',Consolas,monospace;
-    box-shadow:0 8px 24px rgba(0,0,0,.5);
-    margin-bottom:8px;
+    background:#030712; border:1px solid #1e293b; border-radius:10px;
+    overflow:hidden; font-family:'JetBrains Mono','Fira Code',Consolas,monospace;
+    box-shadow:0 8px 24px rgba(0,0,0,.5); margin-bottom:4px; position:relative;
   }}
   .dterm-header {{
     background:linear-gradient(180deg,#0f172a,#0b1120);
-    padding:9px 14px;
-    display:flex;
-    justify-content:space-between;
-    align-items:center;
-    border-bottom:1px solid #1e293b;
-    font-size:0.78rem;
-    color:#94a3b8;
+    padding:9px 14px; display:flex; justify-content:space-between;
+    align-items:center; border-bottom:1px solid #1e293b;
+    font-size:0.78rem; color:#94a3b8;
   }}
   .dterm-body {{
-    padding:12px 16px;
-    font-size:0.76rem;
-    line-height:1.65;
-    white-space:pre-wrap;
-    word-break:break-word;
-    color:#e2e8f0;
-    height:290px;
-    overflow-y:auto;
-    background:#030712;
+    padding:12px 16px; font-size:0.76rem; line-height:1.65;
+    white-space:pre-wrap; word-break:break-word; color:#e2e8f0;
+    height:310px; overflow-y:auto; background:#030712;
+    scroll-behavior:auto !important;
+    overscroll-behavior:contain;
   }}
-  .dterm-body::-webkit-scrollbar{{width:5px;}}
+  .dterm-body::-webkit-scrollbar{{width:6px;}}
   .dterm-body::-webkit-scrollbar-track{{background:#06090f;}}
   .dterm-body::-webkit-scrollbar-thumb{{background:#1e293b;border-radius:3px;}}
   .dterm-body::-webkit-scrollbar-thumb:hover{{background:#334155;}}
   .dterm-footer {{
-    padding:6px 16px 10px;
-    border-top:1px dashed #1e293b;
-    font-size:0.75rem;
-    color:{prompt_color};
-    font-family:monospace;
-    background:#030712;
+    padding:6px 16px 10px; border-top:1px dashed #1e293b;
+    font-size:0.75rem; color:{prompt_color}; font-family:monospace; background:#030712;
   }}
+  #dterm-jump-pill {{
+    position:absolute; bottom:46px; right:14px;
+    background:linear-gradient(135deg,#0284c7,#0369a1);
+    color:#fff; padding:6px 14px; border-radius:20px;
+    font-size:0.72rem; font-weight:700; cursor:pointer;
+    display:none; align-items:center; gap:5px;
+    border:1px solid #38bdf8;
+    animation:dterm-pill-glow 2s ease-in-out infinite;
+    z-index:10; font-family:'JetBrains Mono',Consolas,monospace;
+    user-select:none;
+  }}
+  #dterm-jump-pill:hover{{ transform:translateY(-2px); }}
 </style>
-<div class="dterm-box">
+<div class="dterm-box" id="dterm-box">
   <div class="dterm-header">
     <div style="display:flex;align-items:center;gap:8px;">
       <span style="width:10px;height:10px;border-radius:50%;background:#ef4444;display:inline-block;"></span>
       <span style="width:10px;height:10px;border-radius:50%;background:#f59e0b;display:inline-block;"></span>
       <span style="width:10px;height:10px;border-radius:50%;background:#22c55e;display:inline-block;"></span>
-      <span style="margin-left:8px;font-weight:600;color:#94a3b8;">delta-trader-daemon.sh</span>
+      <span style="margin-left:8px;font-weight:600;color:#94a3b8;">delta-trader-daemon.sh (bash) &mdash; {symbol} [{resolution}]</span>
     </div>
-    <div>{header_right}</div>
+    <div style="display:flex;align-items:center;gap:10px;font-size:0.75rem;">
+      <span id="dterm-scroll-badge" style="color:#4ade80;font-weight:700;">&#128994; AUTO-SCROLL</span>
+      <span style="color:#475569;">|</span>
+      {status_dot}
+    </div>
   </div>
-  <div class="dterm-body">
+  <div class="dterm-body" id="dterm-body">
 {body_html}
+    <div id="dterm-bottom-anchor" style="height:1px;width:100%;"></div>
   </div>
+  <div id="dterm-jump-pill" onclick="dtermJumpToBottom()">&#11015; Jump to Latest (Resume)</div>
   <div class="dterm-footer">
     <span style="color:#4ade80;font-weight:bold;">delta-bot@cloud</span>:<span style="color:#38bdf8;">~</span>$ <span style="color:#94a3b8;">{prompt_text}</span> {cursor}
   </div>
 </div>
+<script>
+(function() {{
+  // Purge any legacy stuck flags from previous sessions
+  try {{
+    sessionStorage.removeItem('dterm_paused_v2');
+    sessionStorage.removeItem('dterm_scroll_top_v2');
+    sessionStorage.removeItem('delta_term_paused');
+    sessionStorage.removeItem('delta_term_scroll_top');
+  }} catch(e) {{}}
+
+  var term = document.getElementById('dterm-body');
+  var pill = document.getElementById('dterm-jump-pill');
+  var badge = document.getElementById('dterm-scroll-badge');
+  if (!term) return;
+
+  // Window-level state: persists across Streamlit fragment refreshes in the active tab
+  if (typeof window.__dterm_user_locked === 'undefined') {{
+    window.__dterm_user_locked = false;
+    window.__dterm_saved_pos = 0;
+  }}
+
+  function updateBadgeAndPill(isLocked) {{
+    if (isLocked) {{
+      if (pill) pill.style.display = 'flex';
+      if (badge) {{
+        badge.innerHTML = '&#9208; SCROLL PAUSED';
+        badge.style.color = '#fbbf24';
+      }}
+    }} else {{
+      if (pill) pill.style.display = 'none';
+      if (badge) {{
+        badge.innerHTML = '&#128994; AUTO-SCROLL';
+        badge.style.color = '#4ade80';
+      }}
+    }}
+  }}
+
+  // Immediate positioning without animation flash
+  if (window.__dterm_user_locked && window.__dterm_saved_pos > 0) {{
+    term.scrollTop = window.__dterm_saved_pos;
+    updateBadgeAndPill(true);
+  }} else {{
+    term.scrollTop = term.scrollHeight;
+    updateBadgeAndPill(false);
+  }}
+
+  // User scroll detection
+  term.addEventListener('scroll', function() {{
+    var dist = term.scrollHeight - term.clientHeight - term.scrollTop;
+    if (dist > 35) {{
+      // Scrolled up to read: preserve position and show Jump button
+      window.__dterm_user_locked = true;
+      window.__dterm_saved_pos = term.scrollTop;
+      updateBadgeAndPill(true);
+    }} else {{
+      // Scrolled back near bottom: automatically re-engage auto-scroll!
+      window.__dterm_user_locked = false;
+      window.__dterm_saved_pos = 0;
+      updateBadgeAndPill(false);
+    }}
+  }}, {{ passive: true }});
+
+  // Global handler for Jump to Latest button
+  window.dtermJumpToBottom = function() {{
+    window.__dterm_user_locked = false;
+    window.__dterm_saved_pos = 0;
+    term.scrollTop = term.scrollHeight;
+    updateBadgeAndPill(false);
+  }};
+}})();
+</script>
 """
+
 
 
 DEFAULT_SYMBOLS = ["BTCUSD", "ETHUSD", "SOLUSD", "XRPUSD", "DOGEUSD", "ADAUSD"]
