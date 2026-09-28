@@ -1,20 +1,13 @@
-# Environment and credentials - NEVER COMMIT SENSITIVE SECRETS
-.env
-.env.*
-!.env.example
-
-# Python
+# Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
 *$py.class
+
+# C extensions
 *.so
-.Python
-env/
-venv/
-ENV/
-.venv/
 
 # Distribution / packaging
+.Python
 build/
 develop-eggs/
 dist/
@@ -27,18 +20,54 @@ parts/
 sdist/
 var/
 wheels/
+share/python-wheels/
 *.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
 
-# Logs and system files
+# Virtual Environments
+venv/
+env/
+ENV/
+.venv/
+
+# Environment variables & secrets - NEVER COMMIT SECRETS
+.env
+.env.local
+.env.*.local
+*.key
+*.pem
+
+# Database files
+*.sqlite3
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+data/*.db
+data/*.sqlite3
+
+# Logs
+logs/
 *.log
-.DS_Store
-Thumbs.db
+
+# Unit test / coverage reports
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+nosetests.xml
+coverage.xml
+
+# IDE / Editor
 .vscode/
 .idea/
+*.sublime-project
+*.sublime-workspace
+.DS_Store
 
-# Streamlit local secrets & persisted user settings
-.streamlit/secrets.toml
-user_settings.json
-
-# Large temporary datasets (keep lightweight sample data)
-data/*.parquet
+# Models directory trained weights (Phase 3+)
+models/*.pt
+models/*.onnx
+models/*.pkl
